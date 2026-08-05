@@ -1,0 +1,62 @@
+<!--
+This is a commented skeleton, not a working CLAUDE.md. Copy it to the repo root as
+CLAUDE.md and fill in every TODO. dp-agent's skills (dp-plan and dp-git-help especially)
+read this file for team convention instead of guessing — an unfilled section here means
+those skills will say "not specified" rather than invent an answer, which is by design.
+Delete this comment block once you've filled the file in.
+-->
+
+# CLAUDE.md
+
+## Stack
+
+<!-- TODO(team): languages, frameworks, package manager, runtime versions. Be specific
+     enough that a plan can name exact commands, e.g. "npm run test", not "run tests". -->
+- Language(s):
+- Framework(s):
+- Package manager:
+- Build/test command(s):
+
+## Architecture
+
+<!-- TODO(team): the shape of the codebase — layers, module boundaries, where business
+     logic lives vs. transport/IO. This is what dp-plan uses to decide where new code
+     belongs, so be concrete about directory-to-responsibility mapping. -->
+- Top-level layout:
+- Where does [domain logic / API handlers / DB access / UI] live:
+- Patterns to follow (and patterns to avoid):
+
+## Naming
+
+<!-- TODO(team): file naming, branch naming, variable/function casing conventions —
+     whatever isn't already enforced by a linter. -->
+- File naming:
+- Branch naming (dp-cpr and dp-git-help both care about this):
+- Code naming conventions:
+
+## Testing approach
+
+<!-- TODO(team): what dp-plan uses to decide what "Tests to add" should look like, and
+     what the test-protection hook is implicitly assuming exists already. -->
+- Test framework:
+- Unit vs. integration bar — when is each required:
+- Where do new tests go (directory/file convention):
+- Coverage or quality expectations, if any:
+- What should dp-plan run itself vs. leave for you? Default is unit tests only — no
+  browser/E2E installs, no full builds, those get named as a command for you to run
+  instead. TODO(team): override here if this team wants more run automatically.
+
+## PR expectations
+
+<!-- TODO(team): dp-cpr fills templates/pr-description.md and
+     templates/commit-message.md with this in mind — keep them consistent with what you
+     write here. -->
+- Review requirements (min. approvers, required reviewers for certain paths):
+- CI checks that must pass before merge:
+- Merge strategy (squash / merge commit / rebase):
+- Draft-PR-by-default? Y/N:
+
+## Anything else Claude should know
+
+<!-- TODO(team): known gotchas, deprecated areas to avoid touching, in-flight
+     migrations, anything that would surprise a new contributor. -->
