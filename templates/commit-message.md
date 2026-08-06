@@ -1,31 +1,48 @@
 <!--
-TODO(team): /dp-cpr fills this shape in verbatim. Do not let the skill
-invent a commit convention — replace every TODO below with your actual
-convention (Conventional Commits? Jira-key-prefixed? something else?).
+/dp-cpr fills this shape in verbatim. Convention: Conventional Commits subject
++ a bulleted change list body. Adjust the example below if the real convention
+drifts from it — this file is the source of truth, not the example itself.
 -->
 
 # Commit Message Format
 
 ```
-TODO(team): subject line convention — e.g. "<type>(<scope>): <summary>" or
-"<TICKET-KEY>: <summary>". State max length here too (common: 50-72 chars).
+<type>(<scope>): <summary, imperative mood, lowercase after the colon>
 
-TODO(team): blank line rule, then body wrapping width (common: 72 chars).
+- <Specific change 1, one sentence, capitalized, ends with a period.>
+- <Specific change 2 — one bullet per distinct area touched: controller,
+  routes, services, frontend, tests, etc. — not one bullet per file.>
+- <...>
 
-TODO(team): body content requirements — what must the body explain that the
-subject can't? (e.g. "why", not "what")
+DP-Agent: v1
+```
 
-TODO(team): footer/trailer conventions — ticket links, breaking-change
-markers, co-author lines, etc.
+`<type>`: `feat`, `fix`, `refactor`, `docs`, `test`, `chore` — same set as
+Conventional Commits. `<scope>`: the feature/component area, kebab-case (e.g.
+`innovation-register`), not a file path. No hard subject length cap — clarity
+over brevity, but don't pad it.
+
+## Example
+
+```
+feat(innovation-register): implement asynchronous idea generation with job tracking
+
+- Refactor VsmController to start innovation generation and return job ID.
+- Add methods for checking the status of innovation generation.
+- Update routes to handle asynchronous generation requests and status polling.
+- Enhance services to manage background job execution and error handling.
+- Modify frontend API calls to support new asynchronous workflow.
+- Update tests to cover new functionality and ensure proper job status handling.
 
 DP-Agent: v1
 ```
 
 ## Notes for /dp-cpr
 
-- The `DP-Agent: v1` trailer above is fixed — always append it, so adoption
-  can be measured later with `git log --grep`. Do not let the team
-  convention section above remove it.
+- The `DP-Agent: v1` trailer is fixed — always append it on its own line at
+  the end, so adoption can be measured later with `git log --grep`.
+- One bullet per area of change (controller/routes/services/frontend/tests),
+  not one bullet per file touched — match the example's granularity.
 - TODO(team): do you squash-merge? If so, does the commit message on the
   feature branch even matter, or should /dp-cpr optimize for the PR
   description instead? State the answer here so the skill doesn't guess.

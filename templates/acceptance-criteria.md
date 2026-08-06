@@ -6,6 +6,11 @@ replace both with your own) and delete the other.
 
 # Acceptance Criteria Format
 
+**Keep each criterion to one line.** If a scenario needs more than a sentence to state,
+it's probably two criteria, not one long one — split it rather than writing a paragraph.
+Don't restate the ticket's description as a criterion; every line here should be
+something a reviewer could check off, not context-setting prose.
+
 ## Option A — Given/When/Then
 
 ```

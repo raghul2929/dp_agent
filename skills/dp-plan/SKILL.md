@@ -44,13 +44,18 @@ helps) to find the files actually involved:
 ## 4. Write the plan
 
 Produce the plan in **exactly** the shape defined by `../../templates/plan-format.md` —
-same section headers, same order. Fill every section; write "None identified" rather
-than omitting a section.
+same section headers, same order, including that template's own brevity rules. Fill
+every section; write "None identified" rather than omitting a section. Don't pad a
+section to look thorough — a short "Risks: None identified" is a better answer than
+three invented low-probability risks.
 
 Include the one-line model recommendation this template calls for (e.g. `Sonnet — 6
-files, no schema change`). This is a suggestion for the developer to read and act on
-manually — the skill does not switch models, spawn other agents, or act on its own
-recommendation.
+files, no schema change`), with the exact `/model` command to switch. This is a
+suggestion for the developer to act on manually — the skill does not switch models,
+spawn other agents, or act on its own recommendation. Since step 8 implements
+immediately once the plan is approved, mention that switching (if they want to) needs
+to happen before they approve, not after — there's no pause between approval and
+implementation to switch mid-flight.
 
 ## 5. Hand off to native plan mode — do not build your own approval flow
 
@@ -70,6 +75,12 @@ If `EnterPlanMode`/`ExitPlanMode` are not available in whatever Claude Code envi
 this runs in, fall back to: present the plan as your final message and explicitly tell
 the developer implementation will not start until they say to proceed. Do not treat
 silence or a vague acknowledgement as approval.
+
+**If the developer picks "keep planning" and asks for changes**: update the plan file
+in place and summarize only what changed (e.g. "Updated Steps 2-3 to also touch
+`auth.py` per your note — everything else unchanged"). Don't re-paste the entire plan
+again in the chat response; the developer can already see the full updated plan in the
+plan file plan mode is showing them.
 
 ## 6. Implement the approved plan
 
@@ -95,7 +106,27 @@ developer can run locally in seconds. If the plan's "Tests to add" implies that 
 kind of verification, name the exact command in your final message and say the developer
 should run it themselves — don't run it yourself by default.
 
-## 7. Offer to continue
+## 7. Check against acceptance criteria, and report what was tested
+
+Before asking what's next, show two things plainly — don't fold them quietly into the
+implementation summary, they need to be scannable on their own:
+
+- **Acceptance criteria checklist**: if the ticket has acceptance criteria (from
+  `/dp-ticket`'s draft, or stated directly in the ticket), list every one of them with a
+  verdict: ✅ covered (name the specific change or test that covers it), ⚠️ partially
+  covered (say exactly what's missing), or ❌ not addressed. One line per criterion —
+  the "name the change/test" part is what makes it useful, not extra explanation. If the
+  ticket had no acceptance criteria to check against, say that plainly instead of
+  inventing criteria after the fact just to make the checklist look complete.
+- **Testing summary**: one line per test — name + pass/fail. Then, separately, one line
+  for what you deliberately did not run (E2E, full build, etc.) and the exact command
+  the developer should run themselves to check those.
+
+If any AC item is ⚠️ or ❌, lead with that — don't let a clean-looking "done" message
+bury a real gap. A confident summary with a missed criterion is worse than a summary
+that plainly says something's incomplete.
+
+## 8. Offer to continue
 
 Once implementation is done (and tests, if any were added, are passing), ask the
 developer (e.g. via `AskUserQuestion`) whether to proceed to drafting a commit and PR

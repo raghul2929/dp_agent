@@ -1,11 +1,11 @@
 {
   "name": "dp-agent",
   "displayName": "DP Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Standardises the path from a Jira ticket to a draft merge request: ticket quality check, implementation plan, commit/PR drafting, and git-state explanation. Not a coding agent — a set of skills and templates on top of Claude Code.",
   "author": {
-    "name": "TODO: team or maintainer name"
+    "name": "Raghul K"
   },
-  "license": "TODO: e.g. MIT, or UNLICENSED for internal-only",
+  "license": "MIT",
   "keywords": ["jira", "workflow", "git", "planning"]
 }

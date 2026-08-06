@@ -50,8 +50,12 @@ the bar is unconfigured.
 - Show the rewrite as a **diff against the original**, not just the new version — the
   developer needs to see exactly what changed and why. Use a standard `diff`-style or
   markdown before/after block, whichever renders more clearly for the size of the change.
-- Below the diff, list the specific gaps that drove the rewrite, tied back to the axis
-  that scored low (e.g. "AC scored 1/5 — original had no testable criteria at all").
+- Below the diff, list the specific gaps that drove the rewrite — one line per gap, tied
+  back to the axis that scored low (e.g. "AC scored 1/5 — no testable criteria at all").
+  Don't re-explain the scoring rubric here; the developer just saw the scores in step 2.
+- Keep the rewritten title/description close in length to the original unless the
+  original was genuinely too thin to be usable — a rewrite that's 3x longer than the
+  original usually means you added speculative detail the developer didn't ask for.
 
 ### 3b. Passes → classify
 

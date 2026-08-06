@@ -25,7 +25,8 @@ job stops at making sure they understand what they're looking at.
 
 ## 2. Classify and respond
 
-Exactly one of these applies:
+Check in this order — first match wins, so a dirty tree gets handled before you talk
+about ahead/behind, and a conflict pre-empts everything:
 
 ### Conflicted (unmerged paths present)
 
@@ -39,6 +40,22 @@ Exactly one of these applies:
 - **Stop.** Do not edit any file, do not stage any conflicted path, do not continue or
   abort the operation yourself. Tell the developer their options (resolve manually and
   continue, or abort with the exact command) and let them choose.
+
+### Dirty working tree (uncommitted changes, no conflicts)
+
+This is the common case right after `/dp-agent:dp-cpr` if the developer didn't commit
+during that skill — keep it dead simple, one clear path:
+
+- If `/dp-agent:dp-cpr` already drafted a commit message earlier in this conversation,
+  lead with that — don't make the developer repeat themselves. Ask (via
+  `AskUserQuestion`) whether to stage, commit with that exact message, and push now.
+  On yes: stage only the files that diff covered, commit with the drafted message
+  unedited, then push. On no: just give the three commands for them to run themselves.
+- If no message has been drafted yet, don't invent one — drafting commit messages is
+  `/dp-agent:dp-cpr`'s job, not this skill's. Say so plainly: "Uncommitted changes, but
+  nothing's been drafted yet — run `/dp-agent:dp-cpr` to draft a commit message first."
+- If the branch is also behind/diverged, mention it in one line but don't act on it here
+  — commit first, then re-run this skill (or just ask again) for the pull/rebase call.
 
 ### Behind (or diverged — behind AND ahead)
 

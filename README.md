@@ -104,11 +104,12 @@ invoke them explicitly by name.
 The four skills can run as one guided pass instead of four separate manual invocations:
 
 ```
-/dp-agent:dp-ticket  →  "proceed to plan?"       →  yes
-/dp-agent:dp-plan    →  native plan-mode approval →  implements the plan directly
-                      →  "proceed to commit/PR?"  →  yes
+/dp-agent:dp-ticket  →  "proceed to plan?"        →  yes
+/dp-agent:dp-plan    →  native plan-mode approval  →  implements the plan directly
+                      →  AC checklist + test summary (✅/⚠️/❌ per criterion)
+                      →  "proceed to commit/PR?"   →  yes
 /dp-agent:dp-cpr     →  drafts, commits on your confirmation
-                      →  "check git state now?"   →  yes
+                      →  "check git state now?"    →  yes
 /dp-agent:dp-git-help
 ```
 
@@ -160,3 +161,7 @@ be edited without touching any `SKILL.md`:
 
 If a `SKILL.md` ever contains more than a few sentences of team-specific wording, that's
 a bug — it belongs in one of these files instead.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

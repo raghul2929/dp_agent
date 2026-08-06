@@ -9,30 +9,37 @@ recommendation guidance, all marked TODO below.
 
 Fill in every section. Do not skip a section — write "None identified" if empty.
 
+**Keep it tight.** This is a plan, not a design doc — the developer should be able to
+scan the whole thing in under a minute. Bullet points, not paragraphs. State *what*,
+not *why*, unless the why is genuinely non-obvious (a workaround, a constraint that
+isn't visible in the code). No section here should run longer than what's below shows —
+if a section is running long, that's a sign the ticket needs splitting, not a sign to
+write more.
+
 ```markdown
 ## Ticket
 [key/title] — [link]
 
 ## Summary
-One paragraph: what this plan achieves and why.
+1-2 sentences: what this plan achieves. Not a restatement of the ticket.
 
 ## Files to change
-- `path/to/file.ext` — what changes and why (found by exploring the repo,
-  not guessed)
+- `path/to/file.ext` — one line: what changes (found by exploring the repo, not
+  guessed)
 - ...
 
 ## Steps
-1. Ordered, each step small enough to review independently
+1. One line each, imperative, small enough to review independently
 2. ...
 
 ## Tests to add
-- TODO(team): what's the minimum bar — unit only, or unit + integration?
-  State the file(s) and what each new/changed test asserts.
+- One line per test: file + what it asserts. TODO(team): unit only, or unit +
+  integration as the minimum bar?
 
 ## Risks
 <!-- TODO(team): define your severity scale, e.g. Low/Medium/High with
      criteria for each, or a numeric scale. Placeholder below. -->
-- [severity — TODO(team) scale] risk description — mitigation
+- [severity — TODO(team) scale] risk — mitigation, one line each
 
 ## Blast radius
 <!-- TODO(team): what categories matter here? e.g. "user-facing / internal
@@ -42,7 +49,7 @@ One paragraph: what this plan achieves and why.
   cleanly?
 
 ## Model recommendation
-[Model] — [one-line reason, e.g. file count, presence of schema/migration
-changes, novelty of the pattern]. This is a suggestion for the developer,
-not an instruction the plan executes on.
+[Model] — one-line reason (file count, schema change present, novelty of the
+pattern). To switch before implementation starts: `/model [name]`. A suggestion for
+the developer to act on themselves — dp-plan does not switch models on its own.
 ```
