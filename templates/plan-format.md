@@ -21,7 +21,8 @@ write more.
 [key/title] — [link]
 
 ## Summary
-1-2 sentences: what this plan achieves. Not a restatement of the ticket.
+One sentence — what this plan achieves. Not a restatement of the ticket, not a
+paragraph.
 
 ## Files to change
 - `path/to/file.ext` — one line: what changes (found by exploring the repo, not

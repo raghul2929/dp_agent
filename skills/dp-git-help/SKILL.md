@@ -8,75 +8,78 @@ disallowed-tools: Edit, Write, NotebookEdit
 # /dp-git-help — explain the git state
 
 This skill explains; it does not fix. The one hard rule: **never resolve a conflict.**
-That includes not running `git checkout --ours/--theirs`, not editing conflicted files,
-not `git add`-ing a conflicted path, and not running `merge --continue` /
-`rebase --continue` / `--skip`. Resolution is always the developer's call — this skill's
+That means never running `git checkout --ours/--theirs`, never editing a conflicted
+file, never `git add`-ing a conflicted file, and never running `merge --continue` /
+`rebase --continue` / `--skip`. Resolving is always the developer's call — this skill's
 job stops at making sure they understand what they're looking at.
 
-## 1. Gather state
+**Plain language throughout.** No git jargon the developer has to look up — say what's
+actually true in the simplest words that are still accurate. If a term needs a footnote
+to explain, don't use the term, describe the situation instead.
 
-- `git status` — working tree state, and whether there's an unmerged/conflicted path.
-- `git fetch` — updates remote-tracking refs so the comparison below is current (this
-  only touches remote-tracking refs, not the working tree or local branches — safe).
-- `git rev-list --left-right --count HEAD...@{u}` (or equivalent) — how far ahead/behind
-  the local branch is from its upstream. If there's no upstream configured, say so and
-  stop here with the command to set one (`git push -u origin <branch>`), rather than
-  guessing what the intended remote branch is.
+## 1. Look at the current state
 
-## 2. Classify and respond
+- `git status` — is anything uncommitted? Is anything conflicted?
+- `git fetch` — checks what's new on the remote so the comparison below is accurate
+  (this doesn't change any of your files, just updates what git knows about the remote).
+- `git rev-list --left-right --count HEAD...@{u}` (or equivalent) — how many commits
+  ahead/behind you are. If there's no upstream set yet, say so and stop here with the
+  command to set one (`git push -u origin <branch>`) rather than guessing.
 
-Check in this order — first match wins, so a dirty tree gets handled before you talk
-about ahead/behind, and a conflict pre-empts everything:
+## 2. Figure out which case this is
 
-### Conflicted (unmerged paths present)
+Check in this order — first match wins, so uncommitted changes get handled before
+talking about ahead/behind, and a conflict comes before everything else:
 
-- Name every conflicting file from `git status`.
-- For each one, explain what the conflict is about in plain terms — which two sides are
-  disagreeing (e.g. "your branch changed the function signature; `main` deleted the same
-  function") by reading the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) in the
-  file, not by guessing.
-- State whether this is mid-merge or mid-rebase (`git status` says which), since the
-  abort command differs (`git merge --abort` vs `git rebase --abort`).
-- **Stop.** Do not edit any file, do not stage any conflicted path, do not continue or
-  abort the operation yourself. Tell the developer their options (resolve manually and
-  continue, or abort with the exact command) and let them choose.
+### You have a conflict
 
-### Dirty working tree (uncommitted changes, no conflicts)
+- Name every file with a conflict, from `git status`.
+- For each one, explain in plain terms what's disagreeing — read the actual conflict
+  markers (`<<<<<<<` / `=======` / `>>>>>>>`) in the file and describe both sides (e.g.
+  "your branch renamed this function; the other branch deleted it"), don't guess.
+- Say whether this happened during a merge or a rebase (`git status` tells you which),
+  since the command to back out differs (`git merge --abort` vs `git rebase --abort`).
+- **Stop there.** Don't edit the file, don't stage it, don't continue or back out of the
+  merge/rebase yourself. Give the developer their two options — fix it by hand and
+  continue, or back out with the exact command — and let them pick.
 
-This is the common case right after `/dp-agent:dp-cpr` if the developer didn't commit
-during that skill — keep it dead simple, one clear path:
+### You have uncommitted changes (and no conflict)
 
-- If `/dp-agent:dp-cpr` already drafted a commit message earlier in this conversation,
-  lead with that — don't make the developer repeat themselves. Ask (via
-  `AskUserQuestion`) whether to stage, commit with that exact message, and push now.
-  On yes: stage only the files that diff covered, commit with the drafted message
-  unedited, then push. On no: just give the three commands for them to run themselves.
-- If no message has been drafted yet, don't invent one — drafting commit messages is
-  `/dp-agent:dp-cpr`'s job, not this skill's. Say so plainly: "Uncommitted changes, but
-  nothing's been drafted yet — run `/dp-agent:dp-cpr` to draft a commit message first."
-- If the branch is also behind/diverged, mention it in one line but don't act on it here
-  — commit first, then re-run this skill (or just ask again) for the pull/rebase call.
+This is the normal state right after `/dp-agent:dp-cpr` if the developer didn't commit
+during that step. Keep this one simple, one clear path forward:
 
-### Behind (or diverged — behind AND ahead)
+- If `/dp-agent:dp-cpr` already wrote a commit message earlier in this conversation,
+  say so and ask (via `AskUserQuestion`) whether to save and push now using that exact
+  message. If yes: save only the files that message was written for, commit with that
+  message unchanged, then push. If no: just show the three commands so they can run
+  them whenever they're ready.
+- If no message has been written yet, don't write one yourself — that's
+  `/dp-agent:dp-cpr`'s job. Say plainly: "You have changes that aren't saved yet, but no
+  commit message has been written — run `/dp-agent:dp-cpr` to write one first."
+- If they're also behind (see below), mention it in one line but don't deal with it yet
+  — commit first, then come back for the pull.
 
-- Explain how many commits behind (and ahead, if diverged) and why that matters for
-  pushing (a non-fast-forward push will be rejected).
-- Check `CLAUDE.md` at the repo root for a stated pull/rebase preference. If it states
-  one, recommend that with the exact command. If it doesn't say, present both options
-  with their exact commands and a one-line tradeoff each:
-  - `git pull --rebase origin <branch>` — keeps history linear, rewrites local commits.
-  - `git pull origin <branch>` — merge commit, preserves local commit hashes.
-- Do not run either yourself — this skill only explains and suggests.
+### You're behind (the remote has commits you don't have)
 
-### Up to date (or ahead only, no conflicts)
+- Say how many commits behind (and ahead too, if both) and why it matters: pushing will
+  be rejected until you catch up.
+- Check `CLAUDE.md` at the repo root for a stated preference between these two. If it
+  states one, recommend that with the exact command. If not, show both with a one-line
+  tradeoff each:
+  - `git pull --rebase origin <branch>` — keeps history in a straight line, but rewrites
+    your commits.
+  - `git pull origin <branch>` — adds a merge commit, but keeps your commits unchanged.
+- Don't run either yourself — show the command, let them run it.
 
-- If local == remote exactly: say so, nothing to push or pull.
-- If ahead only (nothing to pull, unpushed local commits): confirm it's safe to push and
-  give the exact command (`git push origin <branch>`, or `git push` if upstream is
-  already tracked).
+### You're up to date (or just ahead, nothing to pull)
+
+- Exactly matching the remote: say so, nothing to do.
+- Ahead only (your commits aren't pushed yet, nothing new to pull): say it's safe to
+  push and give the exact command (`git push origin <branch>`, or just `git push` if
+  already tracking upstream).
 
 ## 3. Keep it short
 
-The developer asked a status question, not for a git tutorial. State the classification,
-the relevant facts (file names, commit counts), and the exact command(s) — skip
-background explanation of how git works unless the developer asks a follow-up.
+The developer asked a status question, not for a git lesson. State which case it is,
+the relevant facts (file names, how many commits), and the exact command(s) — skip
+explaining how git works underneath unless they ask a follow-up.

@@ -91,14 +91,23 @@ in that case.
 Don't leave the developer to notice the line above and type a reply unprompted. Always
 follow it with an actual `AskUserQuestion` call, shaped by which path you took:
 
-- **3b (passed), or 3a where the developer has already told you they accept the
-  rewrite**: ask whether to proceed straight to `/dp-plan` now. If yes, read
-  `../dp-plan/SKILL.md` and continue by following it directly, using this ticket as
-  input — don't wait for a separate `/dp-agent:dp-plan` invocation.
+- **3c (severe — needs a conversation with the reporter)**: don't offer to proceed at
+  all; ending here without a question is correct.
 - **3a (rewrite just proposed, not yet accepted)**: ask the developer to decide on the
-  rewrite and the next step together, e.g. options like "Accept the rewrite and proceed
-  to /dp-plan" / "Accept the rewrite, I'll plan later myself" / "Don't accept — I'll
-  revise it myself". Accepting the rewrite and proceeding are one decision for the
+  rewrite and the next step together, e.g. options like "Accept the rewrite and set up a
+  branch" / "Accept the rewrite, I'll continue later myself" / "Don't accept — I'll
+  revise it myself". Accepting the rewrite and continuing are one decision for the
   developer to make in one prompt, not two separate round-trips.
-- **3c (severe — needs a conversation with the reporter)**: don't offer to proceed to
-  `/dp-plan` at all; ending here without a question is correct.
+- **3b (passed), or 3a once the developer has told you they accept the rewrite**: this
+  is the only path that continues past this skill. Do these two asks, in order —
+  don't skip to the second one:
+  1. Ask whether to set up a branch for this ticket now, per
+     `../../templates/branching.md`. If yes: map the classification from step 3b to a
+     `<type>` per that template, build the branch name exactly as that template
+     specifies, and show the three setup commands filled in. Ask them to confirm
+     once they've actually run those commands before moving
+     on — don't assume "yes" to the offer means it's done.
+  2. Then ask whether to proceed straight to `/dp-plan` now, regardless of what they
+     answered on branching. If yes, read `../dp-plan/SKILL.md` and continue by
+     following it directly, using this ticket as input — don't wait for a separate
+     `/dp-agent:dp-plan` invocation.

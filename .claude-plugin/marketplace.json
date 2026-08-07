@@ -1,5 +1,6 @@
 {
   "name": "dp-agent-marketplace",
+  "description": "Self-hosted marketplace for the dp-agent plugin — ticket-to-draft-MR workflow skills for Claude Code.",
   "owner": {
     "name": "Raghul K"
   },

@@ -19,32 +19,42 @@ depending on each developer's personal prompting habits.
 
 ## Install
 
-**CLI**, quick local test, no marketplace needed:
+This plugin is published at `raghul2929/dp_agent` on GitHub — that's the real,
+shareable source. A local `--plugin-dir`/local-path install (further below) only works
+on the machine that folder lives on; use it for developing dp-agent itself, not for
+rolling it out to anyone else.
+
+**CLI:**
+
+```
+claude plugin marketplace add raghul2929/dp_agent
+claude plugin enable dp-agent@dp-agent-marketplace --scope user
+```
+
+(`--scope user` makes it available in every project on your machine; use `--scope
+project`, run from the project root, if you want it enabled just for one project and
+committed to that project's settings — see "Team-wide" below.)
+
+**VS Code extension**:
+
+1. In the chat box, type `/plugins`.
+2. **Marketplaces** tab → **Add** → paste `raghul2929/dp_agent`.
+3. **Plugins** tab → find `dp-agent` → **Install** → pick a scope ("Install for you" /
+   "Install for this project" / "Install locally").
+4. Run `/reload-plugins` in the chat — plugin state doesn't always apply to an
+   already-open session without it (see "Caveats" below).
+
+**Local-path install, for developing dp-agent itself** (not for normal use):
 
 ```
 claude --plugin-dir ./dp-agent
 ```
-
-**VS Code extension** (the `--plugin-dir` flag is CLI-only, so this needs the
-marketplace route instead — `.claude-plugin/marketplace.json` in this plugin already
-declares itself as a self-hosted, single-plugin marketplace):
-
-1. In the extension's chat box, type `/plugins`.
-2. Go to the **Marketplaces** tab → add local path → point it at this plugin's folder,
-   e.g. `D:\work_space\learnings\Ai_agent_dp\dp-agent`.
-3. Go to the **Plugins** tab → find `dp-agent` → toggle it on.
-
-Equivalent via chat commands, either front-end:
-
-```
-/plugin marketplace add D:\work_space\learnings\Ai_agent_dp\dp-agent
-/plugin install dp-agent@dp-agent-marketplace
-```
+or, via `/plugins` → Marketplaces → Add, paste the local folder path instead of the
+GitHub reference. Points at whatever's on disk right now, uncommitted changes included.
 
 **Team-wide, so nobody has to do this by hand per project**: the reliable way to produce
 this file is to let Claude Code write it itself rather than hand-editing — run this once
-from the project root (needs the marketplace already added once via `/plugins` →
-Marketplaces → Add, or `claude plugin marketplace add <path-to-dp-agent>`):
+from the project root (needs the marketplace already added once, per above):
 
 ```
 claude plugin enable dp-agent@dp-agent-marketplace --scope project
@@ -65,14 +75,44 @@ every permission rule in the file. Marketplace registration itself isn't stored 
 all — it lives outside the project, so don't try to declare it in this file.
 
 **Caveats, confirmed by hand:**
-- In the VS Code extension, a change to this file is only picked up on a full window
-  reload (Ctrl+Shift+P → "Developer: Reload Window"), not when merely starting a new
-  Claude Code session in an already-open window.
+- In the VS Code extension, a change to plugin state (enabling, updating) isn't always
+  picked up by a session that's already running — including a *new* session/tab opened
+  in an already-open window. **Run `/reload-plugins` in the chat** to fix this — it's a
+  built-in command that reloads plugin state in place (confirmed: it reports something
+  like `Reloaded: 2 plugins · 6 agents · 2 hooks`). Try this first; it's faster than a
+  full window reload (Ctrl+Shift+P → "Developer: Reload Window"), which is the fallback
+  if `/reload-plugins` alone doesn't fix it.
 - `--scope project` writes `.claude/settings.json` into whatever directory was the
   current working directory when you ran the command — which may not be your actual VS
   Code workspace root if you have a monorepo-style nested folder open. Run it from the
   exact folder you want it to apply to, or you'll get two separate `.claude/` dirs (one
   per folder) each independently "enabling" the plugin for that folder only.
+
+## Updating
+
+Installing from GitHub means everyone's copy is a local cache
+(`~/.claude/plugins/cache/...`), not a live link to the repo — pushing changes doesn't
+reach anyone automatically. After pushing an update, **every** installed copy (yours
+included) needs this to actually pick it up:
+
+**CLI:**
+```
+claude plugin marketplace update dp-agent-marketplace
+claude plugin update dp-agent@dp-agent-marketplace --scope <user|project|local>
+```
+Check your actual scope first with `claude plugin list` if you're not sure — `update`
+fails if you guess wrong (it defaults to assuming `user` scope).
+
+**VS Code extension:** `/plugins` → Marketplaces tab → click the refresh icon next to
+`dp-agent-marketplace`. Then run `/reload-plugins` in the chat.
+
+**Either way, verify it actually worked** — don't just trust that the command
+succeeded. Run `/dp-agent:dp-version` and check it matches what you just pushed (bump
+`plugin.json`'s `version` field on every real change, specifically so this is
+checkable). The "Base directory for this skill: ...\dp-agent\<version>\skills\..." line
+any skill invocation prints is the same signal if you want a second confirmation. If it
+still shows the old version after both commands above, try `/reload-plugins` again,
+then a full window reload (Ctrl+Shift+P → "Developer: Reload Window") as a last resort.
 
 ## First-time setup
 
@@ -93,7 +133,8 @@ the real autocomplete (not just `/dp-ticket` etc., despite the directory names).
 | `/dp-agent:dp-ticket` | Scores a pasted ticket (or a ticket key, if a Jira MCP server is connected) against `templates/ticket-quality-bar.md`. Rewrites + drafts acceptance criteria if it falls short; classifies bug/feature/improvement if it passes. Works standalone — no dependency on the other three skills. |
 | `/dp-agent:dp-plan` | Reads `CLAUDE.md` and explores the repo to ground a plan in real files (never guesses paths), writes a plan in the exact shape of `templates/plan-format.md`, and hands off to Claude Code's native plan mode (`EnterPlanMode`/`ExitPlanMode`) for approval. Writes nothing before approval — but once the plan is approved, it implements it directly in the same flow (see "Chained flow" below). |
 | `/dp-agent:dp-cpr` | Reads the working diff and drafts a commit message (`templates/commit-message.md`) and PR description (`templates/pr-description.md`), links the originating ticket, and summarises test changes. Appends the `DP-Agent: v1` commit trailer so adoption can be tracked with `git log --grep`. Only drafts — it will not `git commit`/`push` without explicit confirmation. |
-| `/dp-agent:dp-git-help` | Explains branch state vs. the remote. Up to date → confirms it's safe to push. Behind → explains why and gives the exact pull/rebase command (checks `CLAUDE.md` for a stated preference first). Conflicted → names the conflicting files and explains each one, then **stops** — it never resolves a conflict; that's always the developer's call. |
+| `/dp-agent:dp-git-help` | Explains branch state vs. the remote in plain language (no git jargon). Up to date → confirms it's safe to push. Uncommitted changes → offers to commit with whatever `/dp-cpr` already drafted, or points to `/dp-cpr` if nothing's drafted yet. Behind → explains why and gives the exact pull/rebase command (checks `CLAUDE.md` for a stated preference first). Conflicted → names the conflicting files and explains each one, then **stops** — it never resolves a conflict; that's always the developer's call. |
+| `/dp-agent:dp-version` | Prints the installed plugin version — one line, nothing else. Use this to confirm an update actually landed instead of trusting that the update command succeeded. |
 
 Each skill's frontmatter `description` is what drives auto-invocation — Claude may pick
 one of these up on its own if the request matches (e.g. pasting a ticket). You can also
@@ -156,8 +197,12 @@ be edited without touching any `SKILL.md`:
 - `plan-format.md` — section headers are fixed (kept consistent across the team on
   purpose); the risk scale and blast-radius categories inside it are yours to define.
 - `commit-message.md` / `pr-description.md` — your actual commit and PR conventions.
-  Everything is a `TODO(team)` placeholder until you fill it in; the one fixed line is
-  the `DP-Agent: v1` trailer in `commit-message.md`, kept for adoption tracking.
+  Both are short by design (one-line commit body, short fields in the PR) — the one
+  fixed line is the `DP-Agent: v1` trailer in `commit-message.md`, kept for adoption
+  tracking.
+- `branching.md` — branch naming (`<type>/<TICKET-KEY>-<short-title>`, read back by
+  `/dp-cpr` to auto-link the ticket), the setup commands `/dp-ticket` offers once a
+  ticket is ready, and the pull-vs-rebase table `/dp-git-help` follows.
 
 If a `SKILL.md` ever contains more than a few sentences of team-specific wording, that's
 a bug — it belongs in one of these files instead.

@@ -27,12 +27,20 @@ conflicted or mid-rebase tree changes what's safe to say here.
 - If neither yields a key, ask the developer for it. Do not fabricate a ticket link —
   a wrong link is worse than no link.
 
-## 3. Summarize the tests
+## 3. Check the test situation
 
-Diff the changed test files specifically (filter the diff for test paths/patterns) and
-summarize what was added vs. modified vs. unchanged. If the diff touches production code
-with no corresponding test change, say that plainly instead of omitting it — the
-developer should decide whether that's intentional, not have it silently glossed over.
+`../../templates/pr-description.md` doesn't currently have a dedicated testing field,
+but flag this plainly in your chat response regardless — it shouldn't get buried:
+
+- If `/dp-agent:dp-plan` ran earlier in this conversation, mention the test results it
+  already reported (step 7 of that skill) — don't re-run tests or invent a result you
+  didn't actually see.
+- If invoked standalone (no prior `/dp-plan` in this conversation), don't run tests
+  yourself either — diff the changed test files (filter the diff for test paths) and
+  say what was added/modified, plus that they haven't been run in this session, so the
+  developer knows to run them before relying on this draft.
+- Either way, if the diff touches production code with no corresponding test change,
+  say that plainly — the developer decides whether that's intentional, not this skill.
 
 ## 4. Draft the commit message and PR description
 
@@ -41,7 +49,9 @@ developer should decide whether that's intentional, not have it silently glossed
   not part of the team's editable convention, and exists so adoption can be measured
   later with `git log --grep`.
 - PR description: fill in the shape from `../../templates/pr-description.md` exactly,
-  including the ticket link from step 2 and the test summary from step 3.
+  including the ticket link from step 2. For the `AC` field, use the ticket's acceptance
+  criteria (from `/dp-ticket`'s draft, or `/dp-plan`'s AC checklist if that ran) and
+  check off only what this diff actually covers.
 - If either template still has unfilled `TODO(team)` placeholders, draft using
   reasonable defaults but flag which sections are provisional because the template
   isn't configured yet — don't silently invent team convention to fill the gap.

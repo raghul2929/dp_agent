@@ -106,6 +106,15 @@ developer can run locally in seconds. If the plan's "Tests to add" implies that 
 kind of verification, name the exact command in your final message and say the developer
 should run it themselves — don't run it yourself by default.
 
+**Never run these, no matter what `CLAUDE.md` says** — this list isn't a cost
+preference like the one above, it's a hard boundary: `git commit` / `git push` /
+`git merge` / `git rebase` (drafting and committing is `/dp-agent:dp-cpr`'s job, not
+this skill's), package installs (`npm install` and equivalents), database migrations or
+seed scripts, deploy or release commands, and anything that deletes. If a plan step
+genuinely needs one of these, name the exact command in your final message and say the
+developer runs it — never run it yourself, and don't look for a workaround that
+technically avoids the literal command while doing the same thing.
+
 ## 7. Check against acceptance criteria, and report what was tested
 
 Before asking what's next, show two things plainly — don't fold them quietly into the
