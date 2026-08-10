@@ -10,8 +10,6 @@ drifts from it — this file is the source of truth, not the example.
 <type>(<scope>): <what changed> [<TICKET-KEY>]
 
 <why it was needed> · <what changed> · <what you left alone>
-
-DP-Agent: v1
 ```
 
 `<type>`: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`. `<scope>`: the
@@ -26,14 +24,10 @@ feat(auth): add OTP login flow [PROJ-123]
 
 Password-only login was blocked by security review · added OTP request/verify
 endpoints and the login-form step · left the password path in place behind a flag
-
-DP-Agent: v1
 ```
 
 ## Notes for /dp-cpr
 
-- The `DP-Agent: v1` trailer is fixed — always append it on its own line at the end,
-  so adoption can be measured later with `git log --grep`.
 - Keep the body to one line. Resist the urge to enumerate every file — that's what the
   PR description's "Changes" section is for, not the commit message.
 - TODO(team): do you squash-merge? If so, does the commit message on the feature
