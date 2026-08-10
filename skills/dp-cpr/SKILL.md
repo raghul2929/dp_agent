@@ -11,9 +11,11 @@ own. Stage/commit only happens if the developer explicitly confirms — see step
 
 ## 1. Read the diff
 
-Run `git diff` (unstaged) and `git diff --staged` (staged). If both are empty, say so
-and stop — there's nothing to draft from. If both have content, ask the developer which
-scope they mean (staged only, or everything) rather than guessing.
+Check scope cheaply first with `git diff --stat` and `git diff --staged --stat`. If both
+are empty, say so and stop — there's nothing to draft from. If only one side has content,
+pull its full text (`git diff` or `git diff --staged`). If both have content, ask the
+developer which scope they mean (staged only, or everything) before pulling either
+side's full text.
 
 Also run `git log --oneline -5` and `git status` for context on branch state — a
 conflicted or mid-rebase tree changes what's safe to say here.
@@ -44,14 +46,16 @@ but flag this plainly in your chat response regardless — it shouldn't get buri
 
 ## 4. Draft the commit message and PR description
 
-- Commit message: fill in the shape from `../../templates/commit-message.md` exactly.
-  Always append the `DP-Agent: v1` trailer on its own line at the end — this is fixed,
-  not part of the team's editable convention, and exists so adoption can be measured
-  later with `git log --grep`.
-- PR description: fill in the shape from `../../templates/pr-description.md` exactly,
-  including the ticket link from step 2. For the `AC` field, use the ticket's acceptance
-  criteria (from `/dp-ticket`'s draft, or `/dp-plan`'s AC checklist if that ran) and
-  check off only what this diff actually covers.
+- Commit message: fill in the shape from `../../templates/commit-message.md` exactly,
+  delivered in a fenced code block in chat so it copy-pastes intact.
+- PR description: fill in the shape from `../../templates/pr-description.md` exactly —
+  real markdown content (headings, bold, bullets), never a flat key:value block —
+  delivered inside a single fenced code block in chat so the raw syntax survives
+  copy-paste (copying rendered chat output strips `##`/`**`/`- [ ]`). Include the
+  ticket link from step 2, and the `Migration`/`Deployment` fields (default "No"; only
+  mark "Yes" if the diff actually touches migration/deploy paths). For the `AC` field,
+  use the ticket's acceptance criteria (from `/dp-ticket`'s draft, or `/dp-plan`'s AC
+  checklist if that ran) and check off only what this diff actually covers.
 - If either template still has unfilled `TODO(team)` placeholders, draft using
   reasonable defaults but flag which sections are provisional because the template
   isn't configured yet — don't silently invent team convention to fill the gap.

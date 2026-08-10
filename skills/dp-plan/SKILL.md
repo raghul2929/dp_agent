@@ -6,12 +6,10 @@ argument-hint: "[ticket text, ticket key, or reference to a /dp-ticket result]"
 
 # /dp-plan — turn a ticket into a plan, then build it once approved
 
-Planning and implementation are two distinct phases of this skill, in this order:
-**plan first, without touching any files — then, only after the developer approves via
-native plan mode, implement exactly that plan.** Never write or edit a file before the
-plan is approved. Once it's approved, proceed straight into implementing it — that's the
-expected continuation of this skill, not a separate step the developer has to ask for
-again.
+Planning and implementation are two distinct phases of this skill: **plan first, without
+touching any files, then implement immediately once the developer approves via native
+plan mode — never write or edit a file before that approval, and never treat
+implementation as a separate step the developer has to ask for again.**
 
 ## 1. Ground yourself in the ticket
 
@@ -32,14 +30,21 @@ convention (see `CLAUDE.md.example` at the plugin root for what should be in it)
 
 ## 3. Explore the repo — do not guess file paths
 
-Use `Grep`/`Glob`/`Read` (and `Bash` for things like `git log --oneline -- <path>` if it
-helps) to find the files actually involved:
+If the ticket (or `CLAUDE.md`) already names the exact file(s), or the change is
+obviously 1-3 files, look them up directly with `Grep`/`Glob`/`Read` (`Bash` for things
+like `git log --oneline -- <path>` if it helps) — there's no reason to pay for a subagent
+round-trip when the target is already known.
 
-- Search for the feature area, entity names, or error strings mentioned in the ticket.
-- Follow imports/references to confirm you've found the real call sites, not just a
-  plausible-looking file name.
-- If you can't confidently locate the relevant code, say so in the plan's Risks section
-  instead of listing a guessed file path as if it were confirmed.
+Otherwise — no named files, the feature area isn't pinpointed by `CLAUDE.md`, or the
+search plausibly spans many directories or an unfamiliar part of the repo — delegate to
+the `Explore` subagent instead of searching inline. Ask it to return exact file paths
+with a one-line justification each, not a narrative dump.
+
+Either way:
+- Follow imports/references to confirm the real call sites, not just a plausible-looking
+  file name.
+- If you (or the subagent) can't confidently locate the relevant code, say so in the
+  plan's Risks section instead of listing a guessed file path as if it were confirmed.
 
 ## 4. Write the plan
 
@@ -144,9 +149,8 @@ don't wait for them to separately type `/dp-agent:dp-cpr`. If they decline, stop
 
 ## Notes
 
-- Nothing gets written or edited before plan-mode approval (step 5) — that boundary is
-  the whole point of planning separately. After approval, step 6 has normal tool access;
-  nothing in this skill restricts it further.
+- See step 5 for the write boundary — nothing restricts tool access further once the
+  plan is approved.
 - If the ticket is a bug report, still produce the full plan shape — "Tests to add"
   should include a regression test that fails before the fix, per whatever your team's
   testing convention (`CLAUDE.md`) says about that.
