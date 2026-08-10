@@ -6,6 +6,54 @@ help. **This is not a coding agent** — Claude Code already is one. This is ski
 templates, and hooks on top of it so the workflow is repeatable across a team instead of
 depending on each developer's personal prompting habits.
 
+## Quick start
+
+The condensed path from zero to a filled-in `CLAUDE.md`, for teams onboarding onto
+dp-agent. Full detail, CLI equivalents, and edge-case caveats live in the sections
+below — this is the copy-paste version.
+
+1. **Open a Claude Code session** in the project you want dp-agent in.
+2. **Add the marketplace** — in the chat, run `/plugins` → **Marketplaces** tab →
+   **Add** → paste `raghul2929/dp_agent`.
+3. **Install the plugin** — **Plugins** tab → find `dp-agent` → **Install** → pick
+   **"Install for you"** if you want it available across all your projects (user
+   scope), not just this one.
+4.  VS Code's window reload (Ctrl+Shift+P → "Developer: Reload
+   Window").
+5. **Verify it loaded** — run `/dp-agent:dp-version`. If it doesn't return a version
+   number, go back to step 4.
+6. **Set up your repo's conventions** — copy `CLAUDE.md.example` to `CLAUDE.md` at your
+   repo root.
+7. **Fill it in** — run this prompt from your repo root:
+
+   > Inspect this repo and fill in the TODO blanks in CLAUDE.md under Stack,
+   > Architecture, Naming, Testing approach, and PR expectations. Keep the section
+   > headers exactly as they are — only replace the blanks. Don't guess anything you
+   > can't verify from the code; leave TODO(team) for anything you genuinely can't
+   > determine (e.g. branch/PR conventions if there's no git history yet). Once done,
+   > delete the top HTML comment block.
+
+   Then review what got filled in — don't take it on faith, especially **PR
+   expectations**: it's a starting template, not a fixed requirement. If a line doesn't
+   match your team's actual process (e.g. you don't require a security review), delete
+   or edit it rather than leaving a stale requirement in. If you decide you need
+   additional security checks beyond what's templated, add those after you've planned
+   and executed your own review process — don't block filling in `CLAUDE.md` on
+   deciding that policy up front.
+8. **Know what each skill is for** before using them:
+
+   | Skill | Purpose |
+   |---|---|
+   | `/dp-agent:dp-ticket` | Checks a ticket is good enough to build from before anyone starts. |
+   | `/dp-agent:dp-plan` | Turns a validated ticket into a repo-grounded implementation plan, then implements it once you approve. |
+   | `/dp-agent:dp-cpr` | Drafts your commit message and PR description from the diff, once work is done. |
+   | `/dp-agent:dp-git-help` | Explains your git state (behind/diverged/conflicted) in plain language — never resolves conflicts for you. |
+   | `/dp-agent:dp-version` | Confirms which plugin version is installed — use this after any update. |
+   | `/dp-agent:dp-review` | For reviewers: checks a teammate's PR only touches what its ticket asked for, then offers to hand off to `/code-review` for correctness/quality. Entry point is a PR number, not a ticket. |
+
+   See "The skills" further below for full detail on each, and "Chained flow" for how
+   they link together into one guided pass.
+
 ## Design
 
 - **Prose lives in `templates/`.** Skill bodies (`skills/*/SKILL.md`) contain flow and
@@ -135,6 +183,7 @@ the real autocomplete (not just `/dp-ticket` etc., despite the directory names).
 | `/dp-agent:dp-cpr` | Reads the working diff and drafts a commit message (`templates/commit-message.md`) and PR description (`templates/pr-description.md`), links the originating ticket, and summarises test changes. Appends the `DP-Agent: v1` commit trailer so adoption can be tracked with `git log --grep`. Only drafts — it will not `git commit`/`push` without explicit confirmation. |
 | `/dp-agent:dp-git-help` | Explains branch state vs. the remote in plain language (no git jargon). Up to date → confirms it's safe to push. Uncommitted changes → offers to commit with whatever `/dp-cpr` already drafted, or points to `/dp-cpr` if nothing's drafted yet. Behind → explains why and gives the exact pull/rebase command (checks `CLAUDE.md` for a stated preference first). Conflicted → names the conflicting files and explains each one, then **stops** — it never resolves a conflict; that's always the developer's call. |
 | `/dp-agent:dp-version` | Prints the installed plugin version — one line, nothing else. Use this to confirm an update actually landed instead of trusting that the update command succeeded. |
+| `/dp-agent:dp-review` | For a senior reviewer with only high-level project knowledge, checks whether a PR's diff (`gh pr view`/`gh pr diff`) stays within the scope of its originating ticket, using `templates/scope-review.md`. Classifies every changed file in-scope/questionable/out-of-scope with reasoning, and flags anything that's also high blast-radius per `templates/plan-format.md`'s categories. Not a correctness/quality review — offers to hand off to the separate `code-review` skill for that via the `Skill` tool, and only posts its summary as a PR comment on explicit confirmation. Input is a PR number/URL via `gh`, not a ticket — this is the reviewer's tool, not part of the author-side chain below. |
 
 Each skill's frontmatter `description` is what drives auto-invocation — Claude may pick
 one of these up on its own if the request matches (e.g. pasting a ticket). You can also
@@ -165,6 +214,25 @@ One boundary worth knowing: the plan file that native plan mode writes to (its n
 location, and the "Accept this plan?" UI itself) is a Claude Code core feature, not
 something a skill can restructure — `/dp-plan` writes into whatever plan mode gives it,
 it can't offer a different review UI or storage format.
+
+### Reviewer entry point: `/dp-agent:dp-review`
+
+`/dp-agent:dp-review` is not a step in the chain above — it's for whoever is
+*reviewing* the PR, not whoever wrote it, and it starts from a PR number/URL (via
+`gh`), not a ticket. It runs standalone, on its own trigger:
+
+```
+/dp-agent:dp-review 42   (or a PR URL, or omitted to infer from the current branch)
+  → scope verdict: contained | drifted
+  → "hand off to /code-review for correctness/quality?"  →  yes  →  code-review (via Skill tool)
+  → "post this scope summary as a PR comment?"           →  yes  →  gh pr comment
+```
+
+Same checkpoint discipline as the author-side chain above — each arrow is an
+explicit `AskUserQuestion`, and posting to the PR only happens on confirmation,
+never by default. `code-review` is a different plugin's skill; the handoff goes
+through Claude Code's `Skill` tool by name, not a relative-path read the way
+dp-agent's own skills chain into each other.
 
 ## Hooks
 
@@ -203,6 +271,11 @@ be edited without touching any `SKILL.md`:
 - `branching.md` — branch naming (`<type>/<TICKET-KEY>-<short-title>`, read back by
   `/dp-cpr` to auto-link the ticket), the setup commands `/dp-ticket` offers once a
   ticket is ready, and the pull-vs-rebase table `/dp-git-help` follows.
+- `scope-review.md` — how strict "in scope" is for `/dp-review`: what counts as a
+  defensible drive-by (Questionable) vs. real scope creep (Out of scope), and
+  whether generated files/test files outside the ticket's area get special
+  treatment. Its Blast-radius section deliberately reuses `plan-format.md`'s
+  categories rather than defining its own — edit blast radius in one place, not two.
 
 If a `SKILL.md` ever contains more than a few sentences of team-specific wording, that's
 a bug — it belongs in one of these files instead.
