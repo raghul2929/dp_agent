@@ -11,9 +11,11 @@ own. Stage/commit only happens if the developer explicitly confirms — see step
 
 ## 1. Read the diff
 
-Run `git diff` (unstaged) and `git diff --staged` (staged). If both are empty, say so
-and stop — there's nothing to draft from. If both have content, ask the developer which
-scope they mean (staged only, or everything) rather than guessing.
+Check scope cheaply first with `git diff --stat` and `git diff --staged --stat`. If both
+are empty, say so and stop — there's nothing to draft from. If only one side has content,
+pull its full text (`git diff` or `git diff --staged`). If both have content, ask the
+developer which scope they mean (staged only, or everything) before pulling either
+side's full text.
 
 Also run `git log --oneline -5` and `git status` for context on branch state — a
 conflicted or mid-rebase tree changes what's safe to say here.

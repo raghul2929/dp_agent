@@ -12,12 +12,11 @@ This skill must be useful standalone — the developer running it may never touc
 ## 1. Get the ticket
 
 - If the user pasted ticket text (title + description, however rough), use it as-is.
-- If the user gave a ticket key (e.g. `TICKET-123`) instead of pasted text, look for a
-  connected Jira/Atlassian MCP tool via `ToolSearch` (query: `"jira issue"`). If one is
-  found, fetch the ticket by key. If none is connected, ask the user to paste the ticket
-  — do not fabricate ticket content.
-- If both a key and pasted text are given, prefer the pasted text (it may be a draft the
-  user hasn't saved to Jira yet) but note the key for the final output.
+- If the user gave a ticket key (e.g. `TICKET-123`) instead, look for a connected
+  Jira/Atlassian MCP tool via `ToolSearch` (query: `"jira issue"`) and fetch by key; if
+  none is connected, ask the user to paste the ticket — do not fabricate ticket content.
+- If both a key and pasted text are given, prefer the pasted text (may be an unsaved
+  draft) but note the key for the final output.
 
 ## 2. Score it
 
@@ -98,16 +97,12 @@ follow it with an actual `AskUserQuestion` call, shaped by which path you took:
   branch" / "Accept the rewrite, I'll continue later myself" / "Don't accept — I'll
   revise it myself". Accepting the rewrite and continuing are one decision for the
   developer to make in one prompt, not two separate round-trips.
-- **3b (passed), or 3a once the developer has told you they accept the rewrite**: this
-  is the only path that continues past this skill. Do these two asks, in order —
-  don't skip to the second one:
-  1. Ask whether to set up a branch for this ticket now, per
-     `../../templates/branching.md`. If yes: map the classification from step 3b to a
-     `<type>` per that template, build the branch name exactly as that template
-     specifies, and show the three setup commands filled in. Ask them to confirm
-     once they've actually run those commands before moving
-     on — don't assume "yes" to the offer means it's done.
-  2. Then ask whether to proceed straight to `/dp-plan` now, regardless of what they
-     answered on branching. If yes, read `../dp-plan/SKILL.md` and continue by
-     following it directly, using this ticket as input — don't wait for a separate
-     `/dp-agent:dp-plan` invocation.
+- **3b (passed), or 3a once the developer has accepted the rewrite**: this is the only
+  path that continues past this skill. Do these two asks, in order:
+  1. Ask whether to set up a branch now, per `../../templates/branching.md`. If yes: map
+     the classification to a `<type>` per that template, build the branch name, and show
+     the three filled-in setup commands. Confirm they've actually run them before moving
+     on — don't assume "yes" means it's done.
+  2. Then ask whether to proceed straight to `/dp-plan`, regardless of the branching
+     answer. If yes, read `../dp-plan/SKILL.md` and follow it directly using this ticket
+     as input — don't wait for a separate `/dp-agent:dp-plan` invocation.
