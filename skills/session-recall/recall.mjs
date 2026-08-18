@@ -320,10 +320,15 @@ function cmdIndex(dirs, max = 12, { self: selfArg = null } = {}) {
 // ground was covered here weeks ago. There is no recall cue in that sentence to
 // trigger on, so we match their words against past sessions' topics instead.
 const CACHE = '.recall-topics.json';
-// v4: banner filtering. A finished session that ever received a pasted pointer keeps its
-// pre-filter topics forever — only live sessions re-parse on mtime — so every entry has to be
+// v5: the aliases field is gone with the model call that filled it. Entries are otherwise
+// unchanged, but a stale v4 entry still carries a dead `aliases` key, so every entry is
 // rebuilt once. One ~0.8s reparse across the corpus.
-const CACHE_V = 4; // bump to invalidate every cached entry after a shape change
+const CACHE_V = 5; // bump to invalidate every cached entry after a shape change
+
+// How many stored topics per session. This one number is the whole representation: too few and
+// a session is unreachable by anything but its headline words, too many and every session
+// shares vocabulary with every other. Tuned by `eval`, not by taste.
+const TOPICS_N = 14;
 
 // Parsing every transcript costs seconds; a prompt hook has milliseconds. Cache
 // keyed on mtime so only new or edited sessions are ever re-read.
@@ -356,59 +361,7 @@ function gistOf(turns, cap = 200) {
   return { ask: trim(firstUser), outcome: trim(lastAsst) };
 }
 
-// Lexical matching only fires when the wording happens to line up: paraphrase a session's
-// own subject and it finds nothing. Aliases close that gap without putting a model in the
-// hot path — generated ONCE per session at cache-build time, then matched as plain words.
-//
-// Spawning `claude -p` starts a session, which fires SessionStart, which runs this script
-// again. RECALL_NO_ENRICH stops that recursion: the child inherits it and never enriches.
-const NO_ENRICH = 'RECALL_NO_ENRICH';
-
-function aliasesFor(entry) {
-  if (process.env[NO_ENRICH]) return [];
-  const subject = (entry.topics || []).slice(0, 8).join(' ');
-  const prompt =
-    'Reply with ONLY a JSON array of 10 lowercase alias keywords a developer might use to ' +
-    'describe this work in different words. No prose, no code fences. ' +
-    'title="' + (entry.title || '') + '" subject="' + subject + '"';
-  let out;
-  try {
-    out = cpExecFile('claude', ['-p', prompt, '--model', 'haiku'], {
-      encoding: 'utf8',
-      timeout: 90000,
-      maxBuffer: 1 << 20,
-      cwd: os.tmpdir(),
-      env: { ...process.env, [NO_ENRICH]: '1' },
-    });
-  } catch {
-    return []; // no CLI, not logged in, timeout — fall back to lexical only
-  }
-  const i = out.indexOf('[');
-  const j = out.lastIndexOf(']');
-  if (i < 0 || j < i) return [];
-  let raw;
-  try {
-    raw = JSON.parse(out.slice(i, j + 1));
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(raw)) return [];
-
-  // Keep the phrase AND its parts: a query saying "end to end" should still reach an
-  // alias stored as "e2e-testing".
-  const seen = new Set();
-  for (const item of raw) {
-    if (typeof item !== 'string') continue;
-    const phrase = item.toLowerCase().trim();
-    if (phrase.length >= 3 && phrase.length <= 40) seen.add(phrase);
-    for (const part of phrase.split(/[^a-z0-9]+/)) {
-      if (part.length >= 3 && !STOP.has(part) && !GENERIC.has(part)) seen.add(part);
-    }
-  }
-  return [...seen].slice(0, 20);
-}
-
-function buildCache(dirs, { enrich = 0 } = {}) {
+function buildCache(dirs) {
   const cacheFile = path.join(dirs[0], CACHE);
   let prev = {};
   try {
@@ -436,22 +389,12 @@ function buildCache(dirs, { enrich = 0 } = {}) {
       date: fmt(s.mtime),
       title: s.title || '',
       turns,
-      topics: keywordsFor(s.turns, 14),
+      topics: keywordsFor(s.turns, TOPICS_N),
       // Counted, not silently discarded: if this total ever jumps, the transcript schema
       // changed and hook output is landing in real turns. Surfaced by `recall.mjs banners`.
       banner: s.turns.filter(isOurs).length,
       ...gistOf(s.turns),
-      aliases: [],
     };
-  }
-  // Only a few per run: a first build over ~90 sessions must not stall a session start.
-  // The backlog fills in over subsequent sessions, or all at once via the enrich command.
-  let budget = Number(enrich) || 0;
-  for (const e of Object.values(store)) {
-    if (budget <= 0) break;
-    if (e.turns < 6 || (e.aliases && e.aliases.length)) continue;
-    e.aliases = aliasesFor(e);
-    budget--;
   }
 
   try {
@@ -489,86 +432,28 @@ function queryTerms(text) {
   return out;
 }
 
-// --- scoring: summary cards are what we match against ---------------------------------
-// Word frequency was never a representation of meaning. A session that typed "tailwind" for
-// 200 turns stored no term resembling "colour palette", so the paraphrase could not reach it at
-// any threshold -- the miss was in what was stored, not in how it was scored. Matching now runs
-// against the cards: title, the model's chosen topics, and the summary prose.
+// --- scoring: stored topics are what we match against ---------------------------------
+// The representation is the topic cache: each session's title plus the frequent terms from its
+// user turns. No model, no cards. This is honest about its own limit -- a paraphrase that
+// shares no vocabulary with the session scores zero and no threshold reaches it. `eval` reports
+// that as ZERO rather than as a near miss, which is the number worth watching.
 const HIT_MIN = 2;
-// 6 was calibrated for the old representation, where one identifier-shaped term could score
-// 3 (identish) x 2 (rarity) x 2 (title) = 12. Card scoring tops out at 2 (topic or title) x 2
-// (rarity) x 1 (an ordinary word -- paraphrases are never identifier-shaped) = 4 per term, so
-// the same bar demanded roughly three times the evidence it used to. 4 is the equivalent line
-// on the new scale, not a loosening of it.
-const SCORE_MIN = 4;
+// Two ordinary shared words are coincidence. 6 accepts either strong evidence (one
+// identifier-shaped term hitting a title: 3 identish x 2 rarity x 2 title = 12) or a broad
+// overlap of several weak ones. The pre-cards bar, restored unchanged.
+const SCORE_MIN = 6;
 const accepted = (c) => c.hits.length >= HIT_MIN && c.score >= SCORE_MIN;
 
 // A hook that talks too much gets uninstalled, so the pointer is capped hard.
-// 2, not 3: at OUT_MAX = 900 with 150-char summaries only two hits fit, and two readable
-// pointers beat three cramped ones. The constant now describes what actually happens.
-const MAX_HITS = 2;
-// 900 chars is ~225 tokens -- nothing beside the ~8k an `outline` costs, and at 600 only one
-// hit ever fit, which made MAX_HITS = 3 a fiction. A pointer offering one option is not a choice.
-const OUT_MAX = 900;
-const SUM_CAP = 150; // per-hit summary clip: at 200 only two hits fit, making MAX_HITS a fiction
+const MAX_HITS = 3;
 
-// Where a term was found decides what it is worth. A title word and a topic phrase are
-// deliberate labels for the whole session; a word inside a phrase is real but weaker evidence;
-// summary prose is the broadest and weakest. A term found in several fields takes the highest
-// weight rather than the sum -- otherwise a word that happens to sit in both the topics and the
-// summary counts twice for saying one thing.
+// Where a term was found decides what it is worth. A title is a deliberate label for the whole
+// session; a stored topic is merely a frequent word from it. A term in both takes the higher
+// weight rather than the sum -- otherwise one word counts twice for saying one thing.
 const W_TITLE = 2;
-const W_TOPIC = 2;
-const W_PART = 1;
-const W_SUMMARY = 1;
+const W_TOPIC = 1;
 
-function loadCards(dirs) {
-  const out = {};
-  for (const d of dirs) {
-    const dir = path.join(CARDS, path.basename(d));
-    let files;
-    try {
-      files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
-    } catch {
-      continue; // no cards for this project yet: digest --backfill has not run
-    }
-    for (const f of files) {
-      let raw;
-      try {
-        raw = fs.readFileSync(path.join(dir, f), 'utf8');
-      } catch {
-        continue;
-      }
-      const grab = (re) => {
-        const m = raw.match(re);
-        return m ? m[1].trim() : '';
-      };
-      const summary = (raw.split('## Summary')[1] || '')
-        .split('## Topics')[0]
-        .replace(/\s+/g, ' ')
-        .trim();
-      const topics = (raw.split('## Topics')[1] || '')
-        .trim()
-        .split(',')
-        .map((t) => t.trim().toLowerCase())
-        .filter(Boolean);
-      out[f.replace(/\.md$/, '')] = {
-        title: grab(/^# (.+)$/m),
-        date: grab(/^date:\s*(.+)$/m),
-        turns: Number(grab(/^turns:\s*(\d+)/m)) || 0,
-        source: grab(/^source:\s*(\S+)/m),
-        summary,
-        topics,
-      };
-    }
-  }
-  return out;
-}
-
-// Topics come back from the model as phrases -- "color-palette", "reload-plugins command",
-// "date-range". Stored whole, a query saying "palette" or "routing" reaches none of them, so
-// each phrase is indexed as itself AND as its parts. This is the same trick aliasesFor used.
-function indexCard(card) {
+function indexEntry(entry) {
   const terms = new Map();
   const put = (raw, w) => {
     const t = String(raw).toLowerCase().replace(/^[./-]+|[./-]+$/g, '');
@@ -577,34 +462,26 @@ function indexCard(card) {
     if (/^[0-9a-f-]{8,}$/i.test(t)) return; // uuids, hashes, session ids
     terms.set(t, Math.max(terms.get(t) || 0, w));
   };
-
-  for (const w of (card.title || '').toLowerCase().split(/[^a-z0-9_.-]+/)) put(w, W_TITLE);
-  for (const phrase of card.topics || []) {
-    put(phrase, W_TOPIC);
-    // Only split when there is something to split: a single-word topic is already its part.
-    if (/[^a-z0-9]/.test(phrase)) {
-      for (const part of phrase.split(/[^a-z0-9]+/)) put(part, W_PART);
-    }
-  }
-  for (const w of (card.summary || '').match(/[A-Za-z_][A-Za-z0-9_./-]{2,}/g) || []) {
-    put(w, W_SUMMARY);
-  }
+  for (const t of entry.topics || []) put(t, W_TOPIC);
+  for (const w of (entry.title || '').toLowerCase().split(/[^a-z0-9_.-]+/)) put(w, W_TITLE);
   return terms;
 }
 
-// Rarity is measured over EVERY indexed term, parts included. Counting only whole phrases would
-// leave every part at df=0, which the rarity scale reads as maximally rare and doubles -- every
-// score would inflate at once and a pass would mean nothing.
+// Rarity is measured over stored TOPICS only, exactly as the pre-cards build measured it:
+// "playwright" (2 sessions) is strong evidence, "skill" (7) is weak, and a flat weight cannot
+// tell them apart. Title words are deliberately left out of df -- a title is one label, not
+// corpus evidence, and folding it in would flatten the scale it is weighed against.
 function buildMatcher(dirs) {
-  const cards = loadCards(dirs);
+  const { store } = buildCache(dirs);
   const index = {};
   const df = new Map();
-  for (const [id, card] of Object.entries(cards)) {
-    const terms = indexCard(card);
-    index[id] = { card, terms };
-    for (const t of terms.keys()) df.set(t, (df.get(t) || 0) + 1);
+  for (const [key, entry] of Object.entries(store)) {
+    index[key.replace(/\.jsonl$/, '')] = { e: entry, terms: indexEntry(entry) };
+    for (const t of new Set((entry.topics || []).map((x) => String(x).toLowerCase()))) {
+      df.set(t, (df.get(t) || 0) + 1);
+    }
   }
-  return { cards, index, df, size: Object.keys(index).length };
+  return { store, index, df, size: Object.keys(index).length };
 }
 
 // A pasted pointer is our own wording, not the user's. Scoring on it re-matches the very
@@ -645,7 +522,7 @@ function applyRarity(df, q) {
 // Every candidate, sorted, threshold NOT applied -- the evaluator needs to see near misses.
 // Tie-break toward the longer session: where two match equally well, the one that ran 400 turns
 // is where the work happened, not the one that ran 1.
-function cardCandidates(m, q, self) {
+function candidates(m, q, self) {
   const selfId = self ? String(self).replace(/\.jsonl$/, '') : null;
   const out = [];
   for (const [id, entry] of Object.entries(m.index)) {
@@ -658,7 +535,7 @@ function cardCandidates(m, q, self) {
       score += w * cw;
       hits.push(term);
     }
-    if (score > 0) out.push({ key: id, s: entry.card, score, hits });
+    if (score > 0) out.push({ key: id, s: entry.e, score, hits });
   }
   out.sort((a, b) => b.score - a.score || b.s.turns - a.s.turns);
   return out;
@@ -669,7 +546,7 @@ function scoreText(m, text, self) {
   if (!q.size) return [];
   // Spelling variants are added BEFORE rarity, so each one is weighted by its own document
   // frequency rather than inheriting the weight of the word the user actually typed.
-  return cardCandidates(m, applyRarity(m.df, expandSpelling(q, m.df)), self);
+  return candidates(m, applyRarity(m.df, expandSpelling(q, m.df)), self);
 }
 
 function cmdMatch(dirs, text, max = MAX_HITS, { self: selfArg = null } = {}) {
@@ -681,34 +558,25 @@ function cmdMatch(dirs, text, max = MAX_HITS, { self: selfArg = null } = {}) {
     (process.env.CLAUDE_CODE_SESSION_ID ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl' : null);
 
   const m = buildMatcher(dirs);
-  if (!m.size) return; // no cards yet -- silence, not a guess from thinner data
+  if (!m.size) return; // brand-new project: silence, not a guess from nothing
   const scored = scoreText(m, text, self).filter(accepted);
   if (!scored.length) return;
 
-  const trailer = 'Read one with: recall.mjs outline <id>   (then search "<term>" for detail)';
-  const lines = [BANNER];
-  let shown = 0;
-
+  console.log(BANNER);
   for (const { key, s, hits } of scored.slice(0, Number(max) || MAX_HITS)) {
-    const head =
+    console.log(
       '  ' + s.date + '  ' + key.slice(0, 8) + '  ' + String(s.turns).padStart(3) +
-      ' turns  ' + (s.title || '(untitled)');
-    const matched = '      matched: ' + hits.slice(0, 6).join(', ');
-    // Measure what the output would ACTUALLY be rather than estimating the overhead: the cap is
-    // a promise about how much lands in the prompt, so it has to be counted exactly.
-    const room = Math.min(
-      SUM_CAP,
-      OUT_MAX - [...lines, head, matched, '      ', trailer].join('\n').length
+        ' turns  ' + (s.title || '(untitled)')
     );
-    if (room < 80 && shown) break; // a stub helps no one: stop rather than print a fragment
-    const sum =
-      s.summary.length > room ? s.summary.slice(0, Math.max(0, room - 1)) + '…' : s.summary;
-    lines.push(head, matched, '      ' + sum);
-    shown++;
+    console.log('      overlaps: ' + hits.slice(0, 8).join(', '));
+    if (s.ask) console.log('      asked: ' + s.ask);
+    // In a short session the final reply is usually incidental, not a conclusion — only
+    // quote it once the conversation was long enough to have arrived somewhere.
+    if (s.outcome && s.turns >= 6) console.log('      ended: ' + s.outcome);
   }
-  lines.push(trailer);
-  console.log(lines.join('\n'));
+  console.log('Read one with: recall.mjs outline <id>   (then search "<term>" for detail)');
 }
+
 
 // --- evaluation -----------------------------------------------------------------------
 // Runs the SAME code path the hook runs, with no model call, so a score is reproducible and a
@@ -729,7 +597,7 @@ function cmdEval(dirs, file) {
   const self = process.env.CLAUDE_CODE_SESSION_ID
     ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl'
     : null;
-  console.log('matching against ' + m.size + ' card(s), ' + m.df.size + ' indexed terms');
+  console.log('matching against ' + m.size + ' session(s), ' + m.df.size + ' indexed terms');
 
   const pad = (s, n) => (String(s) + ' '.repeat(n)).slice(0, n);
   console.log(
@@ -914,275 +782,17 @@ function cmdHook({ all = false, baseDir = null } = {}) {
     /* stay silent rather than break the turn */
   }
 }
-// --- summary cards -----------------------------------------------------------------
-// Word frequency does not carry meaning: a session that typed "tailwind" for 200 turns stores
-// no term resembling "colour palette", so a paraphrase can never reach it. A card replaces the
-// stored representation with three sentences of prose plus deliberate search terms, written
-// once per session by a model that has actually seen the conversation.
-//
-// Cards live OUTSIDE the transcript folder. Claude Code's cleanupPeriodDays sweep deletes
-// transcripts (30 days by default) and does not touch ~/.claude/recall/, so a card outlives the
-// conversation it came from — which is the entire point. One file per session also removes the
-// shared-cache write race: no reader ever mutates another writer's file.
-const CARDS = path.join(os.homedir(), '.claude', 'recall');
-const CARD_TURNS_MIN = 4; // below this a session has not said enough to summarise
-const EXCERPT_CAP = 400; // chars per quoted turn
-
-const cardDirFor = (file) => path.join(CARDS, path.basename(path.dirname(file)));
-const cardPathFor = (file) =>
-  path.join(cardDirFor(file), path.basename(file).replace(/\.jsonl$/, '') + '.md');
-
-// The transcript mtime the card was built from. Lets a re-run skip unchanged sessions without
-// re-reading the transcript or paying for another model call.
-function cardMtime(cardFile) {
-  try {
-    const m = fs.readFileSync(cardFile, 'utf8').match(/^mtime:\s*(\d+)/m);
-    return m ? Number(m[1]) : null;
-  } catch {
-    return null;
-  }
-}
-
-// Which path wrote this card. A fallback card is a placeholder, not a result: if Haiku was
-// rate-limited or logged out mid-backfill, the mtime check alone would report 'unchanged'
-// forever and that session would keep its thin card permanently. --upgrade targets exactly
-// these, ignoring mtime.
-function cardSource(cardFile) {
-  try {
-    const m = fs.readFileSync(cardFile, 'utf8').match(/^source:\s*(\S+)/m);
-    return m ? m[1] : null;
-  } catch {
-    return null;
-  }
-}
-
-// What the model is shown. Text blocks only, so tool output and file dumps cannot reach it.
-// User turns carry the intent; the last assistant turn is where the session landed. Sampling
-// the middle catches the pivot — sessions routinely end up somewhere unrelated to their opening
-// question, and a head-and-tail excerpt alone would miss it entirely.
-function excerptFor(session) {
-  const clip = (t) => {
-    const x = redact(t.text).replace(/\s+/g, ' ').trim();
-    return x.length > EXCERPT_CAP ? x.slice(0, EXCERPT_CAP - 1) + '…' : x;
-  };
-  const users = session.turns.filter(
-    (t) => t.role === 'user' && !INTERRUPT.test(t.text) && !isOurs(t)
-  );
-  const asst = session.turns.filter((t) => t.role === 'assistant' && !isOurs(t));
-
-  const head = users.slice(0, 3);
-  const rest = users.slice(3);
-  const mid = [];
-  if (rest.length) {
-    const k = Math.min(5, rest.length);
-    for (let i = 0; i < k; i++) mid.push(rest[Math.floor(((i + 0.5) * rest.length) / k)]);
-  }
-
-  const parts = [];
-  head.forEach((t, i) => parts.push('[user ' + (i + 1) + '] ' + clip(t)));
-  mid.forEach((t, i) => parts.push('[user, mid-session ' + (i + 1) + '] ' + clip(t)));
-  if (asst.length) parts.push('[assistant, final] ' + clip(asst[asst.length - 1]));
-  return parts.join('\n');
-}
-
-// ONE model call per session. Returns null on any failure — missing CLI, not logged in,
-// timeout, non-JSON reply — and the caller writes a fallback card instead of nothing.
-function summariseSession(title, turns, excerpt) {
-  const prompt =
-    'Summarise this developer coding session so a teammate can FIND it later by keyword.\n' +
-    'Reply with ONLY a JSON object. No prose, no code fences.\n' +
-    '{"summary":"<exactly 3 sentences: what was attempted, what was decided, where it landed>",' +
-    '"topics":["<12 lowercase words a developer would search for>"]}\n' +
-    'Topics must be concrete things actually at stake — library names, screen or file names, ' +
-    'domain terms, the technology used. Never generic words like fix, error, update, code, ' +
-    'session, project. Include the plain-English words someone would use who does not know the ' +
-    'tool names (e.g. both "playwright" and "browser", both "tailwind" and "colour").\n\n' +
-    'TITLE: ' + title + '\nTURNS: ' + turns + '\n\nEXCERPT:\n' + excerpt;
-
-  let out;
-  try {
-    out = cpExecFile('claude', ['-p', prompt, '--model', 'haiku'], {
-      encoding: 'utf8',
-      timeout: 120000,
-      maxBuffer: 1 << 20,
-      cwd: os.tmpdir(),
-      env: { ...process.env, [NO_ENRICH]: '1' },
-    });
-  } catch {
-    return null;
-  }
-  const i = out.indexOf('{');
-  const j = out.lastIndexOf('}');
-  if (i < 0 || j < i) return null;
-  let o;
-  try {
-    o = JSON.parse(out.slice(i, j + 1));
-  } catch {
-    return null;
-  }
-  const summary = typeof o.summary === 'string' ? o.summary.replace(/\s+/g, ' ').trim() : '';
-  const topics = Array.isArray(o.topics)
-    ? [
-        ...new Set(
-          o.topics
-            .filter((t) => typeof t === 'string')
-            .map((t) => t.toLowerCase().trim())
-            .filter((t) => t.length >= 3 && t.length <= 40)
-        ),
-      ].slice(0, 12)
-    : [];
-  if (!summary || !topics.length) return null;
-  return { summary, topics };
-}
-
-// redact() runs over the model's output too, not just the excerpt: a summary can echo back a
-// key the user pasted mid-session, and the card is what Step 4 injects into prompts.
-function writeCard(file, session, turns, data, source) {
-  const dir = cardDirFor(file);
-  fs.mkdirSync(dir, { recursive: true });
-  const out = cardPathFor(file);
-  const body =
-    [
-      '# ' + (session.title || '(untitled)'),
-      'session: ' + path.basename(file).replace(/\.jsonl$/, ''),
-      'date: ' + fmt(session.mtime),
-      'turns: ' + turns,
-      // Rounded: Windows reports a fractional mtimeMs, and a card storing '…173.376'
-      // never compares equal to the integer the freshness check reads back, so every run
-      // would re-summarise it and pay for another model call.
-      'mtime: ' + Math.round(fs.statSync(file).mtimeMs),
-      'source: ' + source,
-      '',
-      '## Summary',
-      redact(data.summary),
-      '',
-      '## Topics',
-      data.topics.map(redact).join(', '),
-      '',
-    ].join('\n');
-  // tmp + rename: a reader never sees a half-written card.
-  const tmp = out + '.tmp';
-  fs.writeFileSync(tmp, body);
-  fs.renameSync(tmp, out);
-  return out;
-}
-
-// Returns a status string, never throws. 'short' | 'unchanged' | 'model' | 'fallback' | 'error'
-function digestOne(file, { force = false } = {}) {
-  try {
-    const card = cardPathFor(file);
-    if (!force && fs.existsSync(card) && cardMtime(card) === Math.round(fs.statSync(file).mtimeMs)) {
-      return 'unchanged';
-    }
-    const session = parseSession(file);
-    if (!session) return 'error';
-    const turns = session.turns.filter(
-      (t) => !(t.role === 'user' && INTERRUPT.test(t.text))
-    ).length;
-    if (turns < CARD_TURNS_MIN) return 'short';
-
-    const title = session.title || '(untitled)';
-    const data = summariseSession(title, turns, excerptFor(session));
-    if (data) {
-      writeCard(file, session, turns, data, 'haiku');
-      return 'model';
-    }
-    // A title plus the session's own frequent terms is thin, but it is findable, and a missing
-    // card is not. Marked so a later run can tell the two apart and upgrade it.
-    const terms = keywordsFor(session.turns, 12).map((t) => t.toLowerCase());
-    writeCard(
-      file,
-      session,
-      turns,
-      {
-        summary:
-          'No model summary available for this session; card built from its title and most ' +
-          'frequent terms. Title: "' + title + '". ' + turns + ' turns.',
-        topics: terms.length
-          ? terms
-          : title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean),
-      },
-      'fallback'
-    );
-    return 'fallback';
-  } catch {
-    return 'error';
-  }
-}
-
-// No timer-free sleep exists in Node's stdlib without a dep; Atomics.wait blocks the thread for
-// a fixed span with no packages and no event loop involvement.
-function sleepMs(ms) {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    /* SharedArrayBuffer unavailable: proceed without the gap */
-  }
-}
-
-// Deliberately walks EVERY session, not SCAN_WINDOW. The window bounds what the startup index
-// prints; applying it here would silently leave the oldest — and often largest — sessions
-// permanently uncarded, which is exactly the invisibility this is meant to fix.
-function cmdDigest(dirs, { id = null, backfill = null, force = false, upgrade = false } = {}) {
-  if (process.env[NO_ENRICH]) return; // `claude -p` is itself a session: this stops the recursion
-
-  const all = sessions(dirs); // newest first
-  let targets;
-  if (upgrade) {
-    targets = all.filter((f) => cardSource(cardPathFor(f)) === 'fallback');
-    console.log(targets.length + ' fallback card(s) to re-try, of ' + all.length + ' session(s).');
-    force = true; // their mtime has not changed; the card being thin is the reason to redo it
-  } else if (backfill !== null) {
-    const n = Number(backfill) || all.length;
-    targets = all.filter((f) => !fs.existsSync(cardPathFor(f))).slice(0, n);
-    console.log(targets.length + ' session(s) without a card, of ' + all.length + ' total.');
-  } else if (id) {
-    targets = all.filter((f) => path.basename(f).startsWith(id));
-    if (!targets.length) {
-      console.log('No session starting with "' + id + '".');
-      return;
-    }
-  } else {
-    return;
-  }
-
-  const tally = { model: 0, fallback: 0, unchanged: 0, short: 0, error: 0 };
-  for (let i = 0; i < targets.length; i++) {
-    const f = targets[i];
-    const r = digestOne(f, { force });
-    tally[r] = (tally[r] || 0) + 1;
-    console.log('  [' + (i + 1) + '/' + targets.length + '] ' + path.basename(f).slice(0, 8) + '  ' + r);
-    if (i < targets.length - 1 && (r === 'model' || r === 'fallback')) sleepMs(1000);
-  }
-  console.log(
-    'cards: ' + tally.model + ' from model, ' + tally.fallback + ' fallback, ' +
-      tally.unchanged + ' already current, ' + tally.short + ' too short, ' +
-      tally.error + ' failed — stored in ' + CARDS
-  );
-}
-
-// Kept OUT of the SessionStart path on purpose: a model call inside a 20s hook can blow the
-// timeout and cost the user the startup listing entirely. Run it explicitly instead.
-function cmdEnrich(dirs, n = 5) {
-  const { store } = buildCache(dirs, { enrich: Number(n) || 5 });
-  const all = Object.values(store);
-  const done = all.filter((e) => (e.aliases || []).length).length;
-  const todo = all.filter((e) => e.turns >= 6 && !(e.aliases || []).length).length;
-  const banner = all.reduce((n, e) => n + (e.banner || 0), 0);
-  console.log(done + " of " + all.length + " sessions have aliases; " + todo + " still to do");
-  console.log(banner + " banner-bearing text turn(s) filtered (see: recall.mjs banners)");
-}
 
 // --- doctor ---------------------------------------------------------------------------
-// Both hooks are silent by design: they print nothing when there is no match, and they exit 0
-// on every failure so a recall problem can never block a prompt or a session exit. The cost of
-// that design is that a CRASH looks exactly like "no match". It happened: a wholesale edit
-// deleted stdinPayload, SessionStart died with a ReferenceError and UserPromptSubmit swallowed
-// the same error in its own catch, and the system was completely dead for an hour while looking
-// perfectly normal. This command is the thing that would have caught it in five seconds.
+// v0.7.0 shipped with BOTH hooks dead and looked completely normal for three sessions: a
+// wholesale block replacement deleted stdinPayload, SessionStart died with a ReferenceError,
+// and UserPromptSubmit swallowed the identical error in its own catch and printed nothing.
+// A recall failure must never block a prompt — that stays — so silence and death are
+// indistinguishable unless something checks. This is the something.
 //
-// It runs the REAL hook commands as child processes with synthetic stdin, exactly as Claude Code
-// invokes them, and fails loudly. Never wire it to a hook; run it by hand after touching the file.
+// It runs the REAL hook commands as child processes with synthetic stdin, exactly as Claude
+// Code invokes them, and fails loudly. Never wire it to a hook; run it by hand after touching
+// this file. This is the only reason child_process is imported.
 function cmdDoctor(dirs, projectDir) {
   const script = process.argv[1];
   const proj = projectDir || process.cwd();
@@ -1195,18 +805,18 @@ function cmdDoctor(dirs, projectDir) {
   console.log('node ' + process.version + ', script ' + script);
   console.log('transcripts: ' + dirs.join(', '));
 
-  // Cards are what matching reads. No cards means permanent silence, which is a valid state for
-  // a fresh project but a broken one everywhere else -- so it is reported, not assumed.
-  const m = buildMatcher(dirs);
-  ok('cards found', m.size > 0, m.size + ' card(s), ' + m.df.size + ' indexed terms');
-  if (!m.size) console.log('       run: recall.mjs digest --backfill');
-
   const transcripts = sessions(dirs);
   ok('transcripts readable', transcripts.length > 0, transcripts.length + ' file(s)');
   if (!transcripts.length) {
     console.log(bad + ' problem(s)');
     return;
   }
+
+  // No stored topics means permanent silence, which is valid for a fresh project and broken
+  // everywhere else -- so it is reported, not assumed.
+  const m = buildMatcher(dirs);
+  ok('topic cache built', m.size > 0, m.size + ' session(s), ' + m.df.size + ' indexed terms');
+
   const payload = JSON.stringify({
     session_id: path.basename(transcripts[0]).replace(/\.jsonl$/, ''),
     transcript_path: transcripts[0],
@@ -1232,35 +842,43 @@ function cmdDoctor(dirs, projectDir) {
 
   // SessionStart: must print an index and exit 0.
   const idx = run(['index', '3', '--dir', proj, '--stdin', '--quiet'], payload);
-  ok('SessionStart hook', !idx.err && /Saved Claude Code sessions/.test(idx.out), idx.err || (idx.out.split('\n')[0] || '(no output)').slice(0, 60));
+  ok(
+    'SessionStart hook',
+    !idx.err && /Saved Claude Code sessions/.test(idx.out),
+    idx.err || (idx.out.split('\n')[0] || '(no output)').slice(0, 60)
+  );
 
-  // UserPromptSubmit: run a prompt built from the corpus's own most common topic, so a healthy
-  // system MUST produce a pointer. A hand-picked probe could go stale; this one cannot.
-  const common = [...m.df.entries()].filter(([t]) => t.length > 4).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
-  const probe = run(['hook', '--dir', proj, '--quiet'], JSON.stringify({ ...JSON.parse(payload), prompt: 'tell me about ' + common.join(' ') }));
-  ok('UserPromptSubmit hook', !probe.err && probe.out.includes(BANNER_MARK), probe.err || (probe.out ? 'pointer printed' : 'NO OUTPUT for a prompt built from the corpus own most common terms'));
+  // UserPromptSubmit: build the probe from the corpus's own most common stored topics, so a
+  // healthy system MUST produce a pointer. A hand-picked probe could go stale; this one cannot.
+  const common = [...m.df.entries()]
+    .filter(([t]) => t.length > 4)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([t]) => t);
+  const probe = run(
+    ['hook', '--dir', proj, '--quiet'],
+    JSON.stringify({ ...JSON.parse(payload), prompt: 'tell me about ' + common.join(' ') })
+  );
+  ok(
+    'UserPromptSubmit hook',
+    !probe.err && probe.out.includes(BANNER_MARK),
+    probe.err ||
+      (probe.out
+        ? 'pointer printed'
+        : 'NO OUTPUT for a prompt built from the corpus own most common terms')
+  );
   if (probe.err || !probe.out) console.log('       probe was: "tell me about ' + common.join(' ') + '"');
 
   // Silence must still work: a prompt with no shared vocabulary must print nothing.
-  const quiet = run(['hook', '--dir', proj, '--quiet'], JSON.stringify({ ...JSON.parse(payload), prompt: 'what time is it in Tokyo right now' }));
-  ok('stays silent when it should', !quiet.err && !quiet.out.trim(), quiet.err || (quiet.out.trim() ? 'FIRED on an unrelated prompt' : 'silent'));
-
-  // SessionEnd: digest must exit 0. Uses the guard env var so it cannot spawn a model call here.
-  const dig = run(['digest', '--stdin', '--quiet'], payload, { [NO_ENRICH]: '1' });
-  ok('SessionEnd hook', !dig.err, dig.err || 'exits 0 (model call suppressed for the check)');
-
-  // The card writer needs the claude CLI; without it digest silently writes fallback cards.
-  let cli = false;
-  try {
-    cpExecFile('claude', ['--version'], { encoding: 'utf8', timeout: 20000, cwd: os.tmpdir() });
-    cli = true;
-  } catch {
-    cli = false;
-  }
-  ok('claude CLI on PATH', cli, cli ? 'cards get real summaries' : 'digest will write source: fallback cards only');
-
-  const fallback = Object.values(m.cards).filter((c) => c.source === 'fallback').length;
-  ok('no fallback cards pending', fallback === 0, fallback ? fallback + ' card(s) -- run: recall.mjs digest --upgrade' : 'none');
+  const quiet = run(
+    ['hook', '--dir', proj, '--quiet'],
+    JSON.stringify({ ...JSON.parse(payload), prompt: 'what time is it in Tokyo right now' })
+  );
+  ok(
+    'stays silent when it should',
+    !quiet.err && !quiet.out.trim(),
+    quiet.err || (quiet.out.trim() ? 'FIRED on an unrelated prompt' : 'silent')
+  );
 
   console.log(bad ? bad + ' problem(s)' : 'all checks passed');
 }
@@ -1289,20 +907,12 @@ const [, , cmd, ...rest] = process.argv;
 let all = false;
 let baseDir = null;
 let useStdin = false;
-let force = false;
-let upgrade = false;
-let backfill = null;
 const args = [];
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
   if (a === '--all') all = true;
   else if (a === '--quiet') QUIET = true;
   else if (a === '--stdin') useStdin = true;
-  else if (a === '--force') force = true;
-  else if (a === '--upgrade') upgrade = true;
-  else if (a === '--backfill') {
-    backfill = /^\d+$/.test(rest[i + 1] || '') ? rest[++i] : '';
-  } else if (a.startsWith('--backfill=')) backfill = a.slice(11);
   else if (a === '--dir') baseDir = rest[++i];
   else if (a.startsWith('--dir=')) baseDir = a.slice(6);
   else args.push(a);
@@ -1316,34 +926,14 @@ if (baseDir && baseDir.includes('${')) baseDir = process.env.CLAUDE_PROJECT_DIR 
 // try/catch could never see it. The hook is quiet by construction now, and resolves its own
 // folder from stdin after the payload has been read.
 const HOOK_ONLY = cmd === 'hook';
-// digest runs from a SessionEnd hook as well as by hand. Quiet either way: a failed card
-// must never make session exit look broken.
-if (HOOK_ONLY || cmd === 'digest') QUIET = true;
-// Neither hook resolves here. Both are handed their folder on stdin, and resolveDir() exits
-// the process on failure -- under QUIET that exit is silent, so a SessionEnd digest launched
-// from a cwd outside the project died before it began. Resolve lazily, inside the branch that
-// actually needs a guess.
-const dirs = HOOK_ONLY || cmd === 'digest' ? null : resolveDir(all, baseDir);
+if (HOOK_ONLY) QUIET = true;
+const dirs = HOOK_ONLY ? null : resolveDir(all, baseDir);
 
 if (HOOK_ONLY) {
   try {
     cmdHook({ all, baseDir });
   } catch {
     /* a recall failure must never break a prompt */
-  }
-  process.exit(0);
-}
-
-if (cmd === 'digest') {
-  try {
-    const payload = stdinPayload(useStdin);
-    const tp = payload.transcript_path || payload.transcriptPath;
-    // The SessionEnd hook names the session it is ending; a manual run names it by prefix.
-    const one = args[0] || (tp ? path.basename(tp).replace(/\.jsonl$/, '') : null);
-    const where = tp ? [path.dirname(path.resolve(tp))] : resolveDir(all, baseDir);
-    cmdDigest(where, { id: upgrade ? null : one, backfill, force, upgrade });
-  } catch {
-    /* never break session exit */
   }
   process.exit(0);
 }
@@ -1355,10 +945,9 @@ else if (cmd === 'outline') cmdShow(dirs, args[0], args[1] || 200, { onlyUser: t
 else if (cmd === 'index')
   cmdIndex(dirs, args[0], { self: selfFileFrom(stdinPayload(useStdin)) });
 else if (cmd === 'match') cmdMatch(dirs, args[0], args[1]);
-else if (cmd === 'enrich') cmdEnrich(dirs, args[0]);
 else if (cmd === 'banners') cmdBanners(dirs);
-else if (cmd === 'doctor') cmdDoctor(dirs, baseDir);
 else if (cmd === 'eval') cmdEval(dirs, args[0]);
+else if (cmd === 'doctor') cmdDoctor(dirs, baseDir);
 else
   fail(
     'usage:\n' +
@@ -1369,9 +958,6 @@ else
       '  recall.mjs index [n] [--dir <path>] [--quiet]             # titles+dates only, for hooks' +
       '\n  recall.mjs match "<text>" [max]                        # sessions whose topics overlap <text>' +
       '\n  recall.mjs banners                                       # sessions carrying our own pointer text' +
-      '\n  recall.mjs digest [<id>] [--stdin] [--force]              # write one summary card' +
-      '\n  recall.mjs digest --backfill [n]                          # card every session lacking one' +
-      '\n  recall.mjs digest --upgrade                               # re-try only source: fallback cards' +
       '\n  recall.mjs eval <file.json>                              # score the matcher against a case file' +
       '\n  recall.mjs doctor                                        # check both hooks actually run'
   );

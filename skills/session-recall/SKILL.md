@@ -81,20 +81,17 @@ this path injects turn text automatically. Bump `CACHE_V` after changing what is
 Generic words (`fix`, `error`, `update`, `user`) are excluded from matching -- they are common
 to half the sessions in any repo and produced hits between unrelated work.
 
-**What is matched is the summary cards, not the transcripts.** A card's title, topics and summary
-prose are indexed; `.recall-topics.json` is now only used by `banners`. Topic phrases are indexed
-whole AND split into parts, so a query saying `palette` reaches a card storing `color-palette`, and
-document frequency counts the parts too -- counting only whole phrases would leave every part at
-df=0, which the rarity scale reads as maximally rare, inflating every score at once. A term found
-in several fields takes the highest weight rather than the sum. British/American spellings are
-normalised, but only to a variant the corpus already contains: an unknown word can never become a
-match by being rewritten.
+**What is matched is the topic cache in `.recall-topics.json`.** Each session stores its title
+plus the most frequent terms from its user turns; a term hitting a title is worth twice one hitting
+a stored topic, and a term in both takes the higher weight rather than the sum. Rarity is measured
+over stored topics only -- "playwright" in 2 sessions is strong evidence, "skill" in 7 is weak, and
+a flat weight cannot tell them apart. British/American spellings are normalised, but only to a
+variant the corpus already contains: an unknown word can never become a match by being rewritten.
 
-A project with no cards yet stays silent rather than guessing from thinner data. Run
-`digest --backfill` once to fill it in.
+A project with no cached topics yet stays silent rather than guessing. The cache builds itself on
+first use, keyed on transcript mtime, so only new or edited sessions are ever re-read.
 
-Accepted hits need at least 2 matching terms AND a score of 4. Output is capped at 2 hits and 900
-characters, with each summary clipped to 150 -- two readable pointers beat three cramped ones.
+Accepted hits need at least 2 matching terms AND a score of 6. Output is capped at 3 hits.
 
 ## Checking it is actually running
 
@@ -138,44 +135,10 @@ identified from the hook's stdin payload (`transcript_path`, then `session_id`),
 `CLAUDE_CODE_SESSION_ID` as a CLI-only fallback -- without that it matches strongly on shared
 vocabulary and is re-parsed in full on every prompt as it grows.
 
-Two honest limits: a session too short to repeat its own subject may yield no topics at all,
-and overlap is lexical, so different vocabulary for the same idea still misses. Summary cards
-below are the answer to the second one.
-
-## Summary cards
-
-Word-frequency topics cannot carry meaning: a session that typed `tailwind` for 200 turns stores
-nothing resembling "colour palette". A card fixes the stored representation rather than the
-scoring -- three sentences of prose plus 12 deliberate search terms, written once per session by
-a model that has actually read an excerpt of the conversation.
-
-    node "$SKILL_DIR/recall.mjs" digest [<id>] [--force]
-    node "$SKILL_DIR/recall.mjs" digest --backfill [n]
-    node "$SKILL_DIR/recall.mjs" digest --upgrade
-
-Cards live in `~/.claude/recall/<project-folder>/<session-id>.md` -- deliberately OUTSIDE the
-transcript folder, because Claude Code's `cleanupPeriodDays` sweep deletes transcripts (30 days
-by default) and does not touch that path. A card outlives the conversation it summarises, which
-is the whole point. One file per session also removes the shared-cache write race.
-
-A `SessionEnd` hook in this plugin's `hooks/hooks.json` digests each session as it closes, so
-cards accrue without anyone remembering to run anything. `--backfill` walks EVERY session, not
-the startup index's 30-file window -- the oldest and largest sessions are exactly the ones that
-would otherwise stay invisible forever.
-
-What the model is shown: the first 3 user turns, up to 5 sampled mid-session user turns, and the
-final assistant turn, each capped at 400 chars, text blocks only, `redact()` applied. Mid-session
-sampling is not decoration -- sessions routinely end up somewhere unrelated to their opening
-question, and a head-and-tail excerpt would miss the pivot.
-
-Sessions under 4 turns are skipped. A session whose card is current for the transcript's mtime is
-skipped without a model call. If the `claude` CLI is missing or its reply is unusable, a fallback
-card is written from the title plus frequent terms and marked `source: fallback` -- a thin card is
-findable, a missing one is not. `--upgrade` re-tries exactly those, ignoring mtime, because a
-session that hit a rate limit would otherwise report `unchanged` forever and keep its thin card.
-
-`digest` never throws and always exits 0. `RECALL_NO_ENRICH=1` is set in the child environment
-because `claude -p` starts a session of its own, which fires `SessionEnd`, which would recurse.
+Two honest limits, both real and both unfixed: a session too short to repeat its own subject
+yields no topics at all and is unreachable, and overlap is lexical, so different vocabulary for
+the same idea still misses. `eval` reports the second as a ZERO score rather than a near miss --
+no threshold reaches those, and that number is the one worth watching.
 
 ## How to search well
 

@@ -41,17 +41,6 @@
           }
         ]
       }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" digest --stdin --quiet",
-            "timeout": 120
-          }
-        ]
-      }
     ]
   }
 }
