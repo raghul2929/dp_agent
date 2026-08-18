@@ -855,6 +855,23 @@ function cmdEval(dirs, file) {
   }
 }
 
+// Hook payloads arrive as JSON on stdin. Read it ONLY when the caller says so: a bare
+// readFileSync(0) blocks until EOF when stdin is an idle terminal or an inherited pipe, which
+// would hang a manual CLI run.
+//
+// This function was silently deleted once by a wholesale block replacement, which broke BOTH
+// hooks: SessionStart crashed with a ReferenceError, and UserPromptSubmit swallowed the same
+// error in its own catch and printed nothing for two hours. `recall.mjs doctor` exists because
+// of that: silence is indistinguishable from a crash unless something checks.
+function stdinPayload(enabled) {
+  if (!enabled) return {};
+  try {
+    return JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+  } catch {
+    return {};
+  }
+}
+
 // slugFor can never match a path Claude Code hashed, or one containing any character beyond
 // `: \\ / _ .` — it replaces ALL non-alphanumerics with '-' and truncates long paths with a
 // hash suffix, so exact match is unreachable for those. Hooks are handed transcript_path,
@@ -1156,6 +1173,98 @@ function cmdEnrich(dirs, n = 5) {
   console.log(banner + " banner-bearing text turn(s) filtered (see: recall.mjs banners)");
 }
 
+// --- doctor ---------------------------------------------------------------------------
+// Both hooks are silent by design: they print nothing when there is no match, and they exit 0
+// on every failure so a recall problem can never block a prompt or a session exit. The cost of
+// that design is that a CRASH looks exactly like "no match". It happened: a wholesale edit
+// deleted stdinPayload, SessionStart died with a ReferenceError and UserPromptSubmit swallowed
+// the same error in its own catch, and the system was completely dead for an hour while looking
+// perfectly normal. This command is the thing that would have caught it in five seconds.
+//
+// It runs the REAL hook commands as child processes with synthetic stdin, exactly as Claude Code
+// invokes them, and fails loudly. Never wire it to a hook; run it by hand after touching the file.
+function cmdDoctor(dirs, projectDir) {
+  const script = process.argv[1];
+  const proj = projectDir || process.cwd();
+  let bad = 0;
+  const ok = (label, good, detail) => {
+    console.log((good ? '  ok   ' : '  FAIL ') + label + (detail ? '  -- ' + detail : ''));
+    if (!good) bad++;
+  };
+
+  console.log('node ' + process.version + ', script ' + script);
+  console.log('transcripts: ' + dirs.join(', '));
+
+  // Cards are what matching reads. No cards means permanent silence, which is a valid state for
+  // a fresh project but a broken one everywhere else -- so it is reported, not assumed.
+  const m = buildMatcher(dirs);
+  ok('cards found', m.size > 0, m.size + ' card(s), ' + m.df.size + ' indexed terms');
+  if (!m.size) console.log('       run: recall.mjs digest --backfill');
+
+  const transcripts = sessions(dirs);
+  ok('transcripts readable', transcripts.length > 0, transcripts.length + ' file(s)');
+  if (!transcripts.length) {
+    console.log(bad + ' problem(s)');
+    return;
+  }
+  const payload = JSON.stringify({
+    session_id: path.basename(transcripts[0]).replace(/\.jsonl$/, ''),
+    transcript_path: transcripts[0],
+    prompt: 'probe',
+  });
+
+  const run = (args, stdin, env) => {
+    try {
+      return {
+        out: cpExecFile(process.execPath, [script, ...args], {
+          input: stdin,
+          encoding: 'utf8',
+          timeout: 60000,
+          maxBuffer: 1 << 20,
+          env: { ...process.env, ...(env || {}) },
+        }),
+        err: null,
+      };
+    } catch (e) {
+      return { out: e.stdout || '', err: (e.stderr || e.message || '').split('\n')[0] };
+    }
+  };
+
+  // SessionStart: must print an index and exit 0.
+  const idx = run(['index', '3', '--dir', proj, '--stdin', '--quiet'], payload);
+  ok('SessionStart hook', !idx.err && /Saved Claude Code sessions/.test(idx.out), idx.err || (idx.out.split('\n')[0] || '(no output)').slice(0, 60));
+
+  // UserPromptSubmit: run a prompt built from the corpus's own most common topic, so a healthy
+  // system MUST produce a pointer. A hand-picked probe could go stale; this one cannot.
+  const common = [...m.df.entries()].filter(([t]) => t.length > 4).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
+  const probe = run(['hook', '--dir', proj, '--quiet'], JSON.stringify({ ...JSON.parse(payload), prompt: 'tell me about ' + common.join(' ') }));
+  ok('UserPromptSubmit hook', !probe.err && probe.out.includes(BANNER_MARK), probe.err || (probe.out ? 'pointer printed' : 'NO OUTPUT for a prompt built from the corpus own most common terms'));
+  if (probe.err || !probe.out) console.log('       probe was: "tell me about ' + common.join(' ') + '"');
+
+  // Silence must still work: a prompt with no shared vocabulary must print nothing.
+  const quiet = run(['hook', '--dir', proj, '--quiet'], JSON.stringify({ ...JSON.parse(payload), prompt: 'what time is it in Tokyo right now' }));
+  ok('stays silent when it should', !quiet.err && !quiet.out.trim(), quiet.err || (quiet.out.trim() ? 'FIRED on an unrelated prompt' : 'silent'));
+
+  // SessionEnd: digest must exit 0. Uses the guard env var so it cannot spawn a model call here.
+  const dig = run(['digest', '--stdin', '--quiet'], payload, { [NO_ENRICH]: '1' });
+  ok('SessionEnd hook', !dig.err, dig.err || 'exits 0 (model call suppressed for the check)');
+
+  // The card writer needs the claude CLI; without it digest silently writes fallback cards.
+  let cli = false;
+  try {
+    cpExecFile('claude', ['--version'], { encoding: 'utf8', timeout: 20000, cwd: os.tmpdir() });
+    cli = true;
+  } catch {
+    cli = false;
+  }
+  ok('claude CLI on PATH', cli, cli ? 'cards get real summaries' : 'digest will write source: fallback cards only');
+
+  const fallback = Object.values(m.cards).filter((c) => c.source === 'fallback').length;
+  ok('no fallback cards pending', fallback === 0, fallback ? fallback + ' card(s) -- run: recall.mjs digest --upgrade' : 'none');
+
+  console.log(bad ? bad + ' problem(s)' : 'all checks passed');
+}
+
 // Visibility for the banner filter. Today this must print 0 for every finished session; a
 // non-zero count on a session nobody pasted into means hook output is being recorded as a
 // real turn, and the filter is the only thing between us and a feedback loop.
@@ -1248,6 +1357,7 @@ else if (cmd === 'index')
 else if (cmd === 'match') cmdMatch(dirs, args[0], args[1]);
 else if (cmd === 'enrich') cmdEnrich(dirs, args[0]);
 else if (cmd === 'banners') cmdBanners(dirs);
+else if (cmd === 'doctor') cmdDoctor(dirs, baseDir);
 else if (cmd === 'eval') cmdEval(dirs, args[0]);
 else
   fail(
@@ -1262,5 +1372,6 @@ else
       '\n  recall.mjs digest [<id>] [--stdin] [--force]              # write one summary card' +
       '\n  recall.mjs digest --backfill [n]                          # card every session lacking one' +
       '\n  recall.mjs digest --upgrade                               # re-try only source: fallback cards' +
-      '\n  recall.mjs eval <file.json>                              # score the matcher against a case file'
+      '\n  recall.mjs eval <file.json>                              # score the matcher against a case file' +
+      '\n  recall.mjs doctor                                        # check both hooks actually run'
   );

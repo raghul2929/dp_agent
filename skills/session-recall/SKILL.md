@@ -96,6 +96,18 @@ A project with no cards yet stays silent rather than guessing from thinner data.
 Accepted hits need at least 2 matching terms AND a score of 4. Output is capped at 2 hits and 900
 characters, with each summary clipped to 150 -- two readable pointers beat three cramped ones.
 
+## Checking it is actually running
+
+    node "$SKILL_DIR/recall.mjs" doctor
+
+Both hooks are silent by design -- nothing to print when there is no match, and exit 0 on every
+failure so recall can never block a prompt. The cost is that a CRASH looks exactly like "no
+match". That happened once: an edit deleted a helper, `SessionStart` died with a ReferenceError,
+`UserPromptSubmit` swallowed the same error in its own catch, and the whole system was dead for
+an hour while looking completely normal. `doctor` runs the real hook commands as child processes
+with synthetic stdin and fails loudly. Run it after touching recall.mjs, and first whenever
+recall "seems quiet".
+
 ## Measuring a change to the matcher
 
     node "$SKILL_DIR/recall.mjs" eval $SKILL_DIR/evals.json

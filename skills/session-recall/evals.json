@@ -179,5 +179,17 @@
     ],
     "why": "c320bec3's card names the cause outright -- report generation running in the background while the popup closes. 4ac27334 carries the most 'pdf' hits (67) and all 10 'regenerat' hits. NOTE: the design packet attributed this case to 23ddcfec (83t), but that session does not appear in a search for 'pdf' or 'regenerat' at all; that attribution was wrong.",
     "original": true
+  },
+  {
+    "prompt": "how do I get the login flow working in the tests",
+    "expect": "match",
+    "session": "4ac27334",
+    "accept": [
+      "4ac27334",
+      "c320bec3",
+      "5416e4f7"
+    ],
+    "found_by": "live use, 2026-08-19 \u2014 user typed this in a real session and got no pointer while Claude re-derived the answer by globbing tests/e2e",
+    "why": "4ac27334 (406t) built this exact login flow. Ranks FIRST at 2.5 but the threshold is 4: 'working' is stoplisted, 'tests' is generic, leaving only the two common words login+flow, which rarity scales to nothing. A rank-1 below-threshold miss \u2014 the score scale, not the vocabulary."
   }
 ]
