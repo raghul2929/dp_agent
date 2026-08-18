@@ -514,10 +514,15 @@ function indexEntry(entry) {
   return terms;
 }
 
-// Rarity is measured over stored TOPICS only, exactly as the pre-cards build measured it:
-// "playwright" (2 sessions) is strong evidence, "skill" (7) is weak, and a flat weight cannot
-// tell them apart. Title words are deliberately left out of df -- a title is one label, not
-// corpus evidence, and folding it in would flatten the scale it is weighed against.
+// Rarity: "playwright" (2 sessions) is strong evidence, "skill" (7) is weak, and a flat weight
+// cannot tell them apart. df is counted over EVERY indexed term -- title words included, in
+// indexEntry's own key space -- so a term is weighed on the same scale it was indexed on.
+//
+// The pre-cards build counted topics only, on the reasoning that a title is one label rather
+// than corpus evidence. That left title terms double-weighted by W_TITLE *and* sitting at df=0,
+// which applyRarity reads as maximally rare and doubles again: roughly 4x, none of it earned.
+// The inflation was near-uniform, so it decided ties rather than moving real targets across the
+// line -- which is exactly how a session with a borrowed title outranked the work itself.
 function buildMatcher(dirs) {
   const { store } = buildCache(dirs);
   const index = {};
@@ -525,7 +530,9 @@ function buildMatcher(dirs) {
   for (const [key, entry] of Object.entries(store)) {
     const terms = indexEntry(entry);
     index[key.replace(/\.jsonl$/, '')] = { e: entry, terms };
-    // 4d EXPERIMENT: title terms folded into df.
+    // Counting title terms here retired the precision floor 7b defended: "write a commit message
+    // for these changes" had been matching 49269330 at exactly SCORE_MIN, on two title terms
+    // holding a rarity bonus they had not earned. They lose it here and the match goes silent.
     for (const t of terms.keys()) df.set(t, (df.get(t) || 0) + 1);
   }
   return { store, index, df, size: Object.keys(index).length };
