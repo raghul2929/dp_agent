@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" index 12 --dir \"${CLAUDE_PROJECT_DIR}\" --quiet",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" index 12 --dir \"${CLAUDE_PROJECT_DIR}\" --stdin --quiet",
             "timeout": 20
           }
         ]
@@ -36,8 +36,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" hook --dir \"${CLAUDE_PROJECT_DIR}\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" hook --dir \"${CLAUDE_PROJECT_DIR}\" --quiet",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" digest --stdin --quiet",
+            "timeout": 120
           }
         ]
       }

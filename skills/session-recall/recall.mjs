@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync as cpExecFile } from 'node:child_process';
 
 const ROOT = path.join(os.homedir(), '.claude', 'projects');
 const MAX_SNIPPET = 300;
@@ -200,6 +201,24 @@ const SCAN_WINDOW = 30; // files parsed before giving up on filling `max` — bo
 const TITLE_CAP = 70;
 const INTERRUPT = /^\[Request interrupted by user/;
 
+// Our own pointer text. ONE constant, two jobs: printed by cmdMatch, and used to recognise
+// that same output if it ever comes back at us as user text. Composing BANNER from
+// BANNER_MARK is what keeps printing and filtering from drifting apart.
+//
+// Verified 2026-08-18 against this machine's transcripts: Claude Code records
+// UserPromptSubmit output as `type:"attachment"` lines carrying no `message.content` at all,
+// so hook output is invisible to parseSession and there is no feedback loop today. The only
+// banner-bearing USER text turns in a 95-session corpus were a human pasting a pointer back
+// into a prompt. This filter covers that, and fails safe on the day the schema starts
+// recording hook output as a real turn.
+const BANNER_MARK = 'already covered this ground';
+const BANNER =
+  `Earlier session(s) on this machine ${BANNER_MARK}. This is prior work on the same ` +
+  'project, possibly by someone else who used this laptop — read before starting fresh.';
+// The pointer's own field lines, so a pasted block is dropped whole and not just its header.
+const OURS_LINE = /^\s*(overlaps|asked|ended):|^\s*Read one with: recall\.mjs/;
+const isOurs = (t) => t.text.includes(BANNER_MARK);
+
 // Topic keywords turn the startup index into a retrieval hook: when a later question
 // mentions a term listed here, the relevant session is already visible in context and no
 // one has to run `search` first. Extracted from user turns only — the ask carries the
@@ -227,6 +246,7 @@ function keywordsFor(turns, n = 6) {
   for (const t of turns) {
     if (t.role !== 'user') continue;
     if (INTERRUPT.test(t.text)) continue; // marker text, not something the user typed
+    if (isOurs(t)) continue; // our own pointer pasted back in — our vocabulary, not theirs
     for (const raw of t.text.match(/[A-Za-z_][A-Za-z0-9_./-]{2,}/g) || []) {
       const tok = raw.replace(/^[./-]+|[./-]+$/g, ''); // trailing sentence punctuation
       if (tok.length < 3) continue;
@@ -244,10 +264,13 @@ function keywordsFor(turns, n = 6) {
     .map(([k]) => casing.get(k));
 }
 
-function cmdIndex(dirs, max = 12) {
-  const self = process.env.CLAUDE_CODE_SESSION_ID
-    ? `${process.env.CLAUDE_CODE_SESSION_ID}.jsonl`
-    : null;
+// self comes from the hook's stdin payload when there is one. Same bug cmdMatch had: with
+// env-only identification the session being started can list itself, and the env var is not
+// guaranteed — the transcript path on stdin is.
+function cmdIndex(dirs, max = 12, { self: selfArg = null } = {}) {
+  const self =
+    selfArg ||
+    (process.env.CLAUDE_CODE_SESSION_ID ? `${process.env.CLAUDE_CODE_SESSION_ID}.jsonl` : null);
 
   const files = sessions(dirs).filter((f) => path.basename(f) !== self);
   const kept = [];
@@ -297,7 +320,10 @@ function cmdIndex(dirs, max = 12) {
 // ground was covered here weeks ago. There is no recall cue in that sentence to
 // trigger on, so we match their words against past sessions' topics instead.
 const CACHE = '.recall-topics.json';
-const CACHE_V = 2; // bump to invalidate every cached entry after a shape change
+// v4: banner filtering. A finished session that ever received a pasted pointer keeps its
+// pre-filter topics forever — only live sessions re-parse on mtime — so every entry has to be
+// rebuilt once. One ~0.8s reparse across the corpus.
+const CACHE_V = 4; // bump to invalidate every cached entry after a shape change
 
 // Parsing every transcript costs seconds; a prompt hook has milliseconds. Cache
 // keyed on mtime so only new or edited sessions are ever re-read.
@@ -319,7 +345,7 @@ function redact(text) {
 }
 
 function gistOf(turns, cap = 200) {
-  const clean = turns.filter((t) => !INTERRUPT.test(t.text));
+  const clean = turns.filter((t) => !INTERRUPT.test(t.text) && !isOurs(t));
   const firstUser = clean.find((t) => t.role === 'user');
   const lastAsst = [...clean].reverse().find((t) => t.role === 'assistant');
   const trim = (t) => {
@@ -330,7 +356,59 @@ function gistOf(turns, cap = 200) {
   return { ask: trim(firstUser), outcome: trim(lastAsst) };
 }
 
-function buildCache(dirs) {
+// Lexical matching only fires when the wording happens to line up: paraphrase a session's
+// own subject and it finds nothing. Aliases close that gap without putting a model in the
+// hot path — generated ONCE per session at cache-build time, then matched as plain words.
+//
+// Spawning `claude -p` starts a session, which fires SessionStart, which runs this script
+// again. RECALL_NO_ENRICH stops that recursion: the child inherits it and never enriches.
+const NO_ENRICH = 'RECALL_NO_ENRICH';
+
+function aliasesFor(entry) {
+  if (process.env[NO_ENRICH]) return [];
+  const subject = (entry.topics || []).slice(0, 8).join(' ');
+  const prompt =
+    'Reply with ONLY a JSON array of 10 lowercase alias keywords a developer might use to ' +
+    'describe this work in different words. No prose, no code fences. ' +
+    'title="' + (entry.title || '') + '" subject="' + subject + '"';
+  let out;
+  try {
+    out = cpExecFile('claude', ['-p', prompt, '--model', 'haiku'], {
+      encoding: 'utf8',
+      timeout: 90000,
+      maxBuffer: 1 << 20,
+      cwd: os.tmpdir(),
+      env: { ...process.env, [NO_ENRICH]: '1' },
+    });
+  } catch {
+    return []; // no CLI, not logged in, timeout — fall back to lexical only
+  }
+  const i = out.indexOf('[');
+  const j = out.lastIndexOf(']');
+  if (i < 0 || j < i) return [];
+  let raw;
+  try {
+    raw = JSON.parse(out.slice(i, j + 1));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+
+  // Keep the phrase AND its parts: a query saying "end to end" should still reach an
+  // alias stored as "e2e-testing".
+  const seen = new Set();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const phrase = item.toLowerCase().trim();
+    if (phrase.length >= 3 && phrase.length <= 40) seen.add(phrase);
+    for (const part of phrase.split(/[^a-z0-9]+/)) {
+      if (part.length >= 3 && !STOP.has(part) && !GENERIC.has(part)) seen.add(part);
+    }
+  }
+  return [...seen].slice(0, 20);
+}
+
+function buildCache(dirs, { enrich = 0 } = {}) {
   const cacheFile = path.join(dirs[0], CACHE);
   let prev = {};
   try {
@@ -359,9 +437,23 @@ function buildCache(dirs) {
       title: s.title || '',
       turns,
       topics: keywordsFor(s.turns, 14),
+      // Counted, not silently discarded: if this total ever jumps, the transcript schema
+      // changed and hook output is landing in real turns. Surfaced by `recall.mjs banners`.
+      banner: s.turns.filter(isOurs).length,
       ...gistOf(s.turns),
+      aliases: [],
     };
   }
+  // Only a few per run: a first build over ~90 sessions must not stall a session start.
+  // The backlog fills in over subsequent sessions, or all at once via the enrich command.
+  let budget = Number(enrich) || 0;
+  for (const e of Object.values(store)) {
+    if (budget <= 0) break;
+    if (e.turns < 6 || (e.aliases && e.aliases.length)) continue;
+    e.aliases = aliasesFor(e);
+    budget--;
+  }
+
   try {
     fs.writeFileSync(cacheFile, JSON.stringify(store));
   } catch {
@@ -397,21 +489,32 @@ function queryTerms(text) {
   return out;
 }
 
-function cmdMatch(dirs, text, max = 3) {
+function cmdMatch(dirs, text, max = 3, { self: selfArg = null } = {}) {
   if (!text) fail('match needs text: recall.mjs match "<prompt text>" [max]');
-  const q = queryTerms(text);
+  // A pasted pointer is our own wording, not the user's. Scoring on it re-matches the very
+  // session we already pointed at.
+  const cleanText = String(text)
+    .split('\n')
+    .filter((l) => !l.includes(BANNER_MARK) && !OURS_LINE.test(l))
+    .join('\n');
+  const q = queryTerms(cleanText);
   if (!q.size) return;
 
-  const self = process.env.CLAUDE_CODE_SESSION_ID
-    ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl'
-    : null;
+  // The live session shares all of the current prompt's vocabulary, so it matches strongly
+  // and buries real prior work; its mtime also changes every turn, so it misses the cache and
+  // is fully re-parsed on every prompt as it grows toward 15MB. Hooks are handed the current
+  // session on stdin — the env var is only a fallback for manual CLI runs.
+  const self =
+    selfArg ||
+    (process.env.CLAUDE_CODE_SESSION_ID ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl' : null);
   const { store } = buildCache(dirs);
 
   // Rarity is measured from the corpus, not hand-maintained: "playwright" (2 sessions)
   // is strong evidence, "skill" (7) is weak, and a flat weight cannot tell them apart.
   const df = new Map();
   for (const s2 of Object.values(store)) {
-    for (const t of new Set((s2.topics || []).map((x) => x.toLowerCase()))) {
+    const bag = [...(s2.topics || []), ...(s2.aliases || [])];
+    for (const t of new Set(bag.map((x) => x.toLowerCase()))) {
       df.set(t, (df.get(t) || 0) + 1);
     }
   }
@@ -422,16 +525,20 @@ function cmdMatch(dirs, text, max = 3) {
   for (const [key, s] of Object.entries(store)) {
     if (key === self) continue;
     const topics = new Set((s.topics || []).map((t) => t.toLowerCase()));
+    const aliases = new Set((s.aliases || []).map((t) => t.toLowerCase()));
     const titleWords = new Set(
       (s.title || '').toLowerCase().split(/[^A-Za-z0-9_.-]+/).filter(Boolean)
     );
     let score = 0;
     const hits = [];
     for (const [term, w] of q) {
+      const inAlias = aliases.has(term);
       const inTopics = topics.has(term);
       const inTitle = titleWords.has(term);
-      if (!inTopics && !inTitle) continue;
-      score += w * (inTitle ? 2 : 1);
+      if (!inTopics && !inTitle && !inAlias) continue;
+      // An alias is a deliberate semantic marker for this session, so it carries the same
+      // weight as a title hit. At x1 it could never clear a threshold calibrated for titles.
+      score += w * (inTitle || inAlias ? 2 : 1);
       hits.push(term);
     }
     // Two ordinary shared words are coincidence. Accept either strong evidence (an
@@ -445,10 +552,7 @@ function cmdMatch(dirs, text, max = 3) {
   scored.sort((a, b) => b.score - a.score || b.s.turns - a.s.turns);
   const top = scored.slice(0, Number(max) || 3);
 
-  console.log(
-    'Earlier session(s) on this machine already covered this ground. This is prior work on ' +
-      'the same project, possibly by someone else who used this laptop — read before starting fresh.'
-  );
+  console.log(BANNER);
   for (const { key, s, hits } of top) {
     const id = key.slice(0, 8);
     console.log('  ' + s.date + '  ' + id + '  ' + String(s.turns).padStart(3) + ' turns  ' + (s.title || '(untitled)'));
@@ -461,32 +565,357 @@ function cmdMatch(dirs, text, max = 3) {
   console.log('Read one with: recall.mjs outline <id>   (then search "<term>" for detail)');
 }
 
+// Hook payloads arrive as JSON on stdin. Read it ONLY when the caller says so: a bare
+// readFileSync(0) blocks until EOF when stdin is an idle terminal or an inherited pipe,
+// which would hang a manual CLI run.
+function stdinPayload(enabled) {
+  if (!enabled) return {};
+  try {
+    return JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+  } catch {
+    return {};
+  }
+}
+
+// slugFor can never match a path Claude Code hashed, or one containing any character beyond
+// `: \\ / _ .` — it replaces ALL non-alphanumerics with '-' and truncates long paths with a
+// hash suffix, so exact match is unreachable for those. Hooks are handed transcript_path,
+// which IS a file inside the right folder, so there is nothing to derive. slugFor stays only
+// as the fallback for manual CLI invocation.
+function dirsFromPayload(payload, { all = false, baseDir = null } = {}) {
+  const tp = payload.transcript_path || payload.transcriptPath;
+  if (tp) {
+    try {
+      const d = path.dirname(path.resolve(tp));
+      if (fs.statSync(d).isDirectory()) return [d];
+    } catch {
+      /* fall through to the slug guess */
+    }
+  }
+  return resolveDir(all, baseDir); // QUIET on the hook path: exits 0, prints nothing
+}
+
+// The transcript's own filename IS the current session — always present, and not dependent on
+// an env var being exported. session_id is the documented field; keep it as the fallback.
+function selfFileFrom(payload) {
+  const tp = payload.transcript_path || payload.transcriptPath;
+  if (tp) return path.basename(tp);
+  if (payload.session_id) return payload.session_id + '.jsonl';
+  return process.env.CLAUDE_CODE_SESSION_ID ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl' : null;
+}
+
 // Entry point for the UserPromptSubmit hook: the harness feeds the prompt as JSON on
 // stdin. Anything printed to stdout is injected as context for that turn. Never throws —
 // a recall failure must not block the prompt.
-function cmdHook(dirs) {
-  let payload = {};
-  try {
-    payload = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
-  } catch {
-    return;
-  }
-  const text = payload.prompt || payload.user_prompt || "";
+function cmdHook({ all = false, baseDir = null } = {}) {
+  const payload = stdinPayload(true);
+  const text = payload.prompt || payload.user_prompt || '';
   if (!text || text.length < 12) return; // too short to carry a topic
   try {
-    cmdMatch(dirs, text, 3);
+    const dirs = dirsFromPayload(payload, { all, baseDir });
+    if (!dirs) return;
+    cmdMatch(dirs, text, 3, { self: selfFileFrom(payload) });
   } catch {
     /* stay silent rather than break the turn */
   }
 }
+// --- summary cards -----------------------------------------------------------------
+// Word frequency does not carry meaning: a session that typed "tailwind" for 200 turns stores
+// no term resembling "colour palette", so a paraphrase can never reach it. A card replaces the
+// stored representation with three sentences of prose plus deliberate search terms, written
+// once per session by a model that has actually seen the conversation.
+//
+// Cards live OUTSIDE the transcript folder. Claude Code's cleanupPeriodDays sweep deletes
+// transcripts (30 days by default) and does not touch ~/.claude/recall/, so a card outlives the
+// conversation it came from — which is the entire point. One file per session also removes the
+// shared-cache write race: no reader ever mutates another writer's file.
+const CARDS = path.join(os.homedir(), '.claude', 'recall');
+const CARD_TURNS_MIN = 4; // below this a session has not said enough to summarise
+const EXCERPT_CAP = 400; // chars per quoted turn
+
+const cardDirFor = (file) => path.join(CARDS, path.basename(path.dirname(file)));
+const cardPathFor = (file) =>
+  path.join(cardDirFor(file), path.basename(file).replace(/\.jsonl$/, '') + '.md');
+
+// The transcript mtime the card was built from. Lets a re-run skip unchanged sessions without
+// re-reading the transcript or paying for another model call.
+function cardMtime(cardFile) {
+  try {
+    const m = fs.readFileSync(cardFile, 'utf8').match(/^mtime:\s*(\d+)/m);
+    return m ? Number(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Which path wrote this card. A fallback card is a placeholder, not a result: if Haiku was
+// rate-limited or logged out mid-backfill, the mtime check alone would report 'unchanged'
+// forever and that session would keep its thin card permanently. --upgrade targets exactly
+// these, ignoring mtime.
+function cardSource(cardFile) {
+  try {
+    const m = fs.readFileSync(cardFile, 'utf8').match(/^source:\s*(\S+)/m);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// What the model is shown. Text blocks only, so tool output and file dumps cannot reach it.
+// User turns carry the intent; the last assistant turn is where the session landed. Sampling
+// the middle catches the pivot — sessions routinely end up somewhere unrelated to their opening
+// question, and a head-and-tail excerpt alone would miss it entirely.
+function excerptFor(session) {
+  const clip = (t) => {
+    const x = redact(t.text).replace(/\s+/g, ' ').trim();
+    return x.length > EXCERPT_CAP ? x.slice(0, EXCERPT_CAP - 1) + '…' : x;
+  };
+  const users = session.turns.filter(
+    (t) => t.role === 'user' && !INTERRUPT.test(t.text) && !isOurs(t)
+  );
+  const asst = session.turns.filter((t) => t.role === 'assistant' && !isOurs(t));
+
+  const head = users.slice(0, 3);
+  const rest = users.slice(3);
+  const mid = [];
+  if (rest.length) {
+    const k = Math.min(5, rest.length);
+    for (let i = 0; i < k; i++) mid.push(rest[Math.floor(((i + 0.5) * rest.length) / k)]);
+  }
+
+  const parts = [];
+  head.forEach((t, i) => parts.push('[user ' + (i + 1) + '] ' + clip(t)));
+  mid.forEach((t, i) => parts.push('[user, mid-session ' + (i + 1) + '] ' + clip(t)));
+  if (asst.length) parts.push('[assistant, final] ' + clip(asst[asst.length - 1]));
+  return parts.join('\n');
+}
+
+// ONE model call per session. Returns null on any failure — missing CLI, not logged in,
+// timeout, non-JSON reply — and the caller writes a fallback card instead of nothing.
+function summariseSession(title, turns, excerpt) {
+  const prompt =
+    'Summarise this developer coding session so a teammate can FIND it later by keyword.\n' +
+    'Reply with ONLY a JSON object. No prose, no code fences.\n' +
+    '{"summary":"<exactly 3 sentences: what was attempted, what was decided, where it landed>",' +
+    '"topics":["<12 lowercase words a developer would search for>"]}\n' +
+    'Topics must be concrete things actually at stake — library names, screen or file names, ' +
+    'domain terms, the technology used. Never generic words like fix, error, update, code, ' +
+    'session, project. Include the plain-English words someone would use who does not know the ' +
+    'tool names (e.g. both "playwright" and "browser", both "tailwind" and "colour").\n\n' +
+    'TITLE: ' + title + '\nTURNS: ' + turns + '\n\nEXCERPT:\n' + excerpt;
+
+  let out;
+  try {
+    out = cpExecFile('claude', ['-p', prompt, '--model', 'haiku'], {
+      encoding: 'utf8',
+      timeout: 120000,
+      maxBuffer: 1 << 20,
+      cwd: os.tmpdir(),
+      env: { ...process.env, [NO_ENRICH]: '1' },
+    });
+  } catch {
+    return null;
+  }
+  const i = out.indexOf('{');
+  const j = out.lastIndexOf('}');
+  if (i < 0 || j < i) return null;
+  let o;
+  try {
+    o = JSON.parse(out.slice(i, j + 1));
+  } catch {
+    return null;
+  }
+  const summary = typeof o.summary === 'string' ? o.summary.replace(/\s+/g, ' ').trim() : '';
+  const topics = Array.isArray(o.topics)
+    ? [
+        ...new Set(
+          o.topics
+            .filter((t) => typeof t === 'string')
+            .map((t) => t.toLowerCase().trim())
+            .filter((t) => t.length >= 3 && t.length <= 40)
+        ),
+      ].slice(0, 12)
+    : [];
+  if (!summary || !topics.length) return null;
+  return { summary, topics };
+}
+
+// redact() runs over the model's output too, not just the excerpt: a summary can echo back a
+// key the user pasted mid-session, and the card is what Step 4 injects into prompts.
+function writeCard(file, session, turns, data, source) {
+  const dir = cardDirFor(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const out = cardPathFor(file);
+  const body =
+    [
+      '# ' + (session.title || '(untitled)'),
+      'session: ' + path.basename(file).replace(/\.jsonl$/, ''),
+      'date: ' + fmt(session.mtime),
+      'turns: ' + turns,
+      // Rounded: Windows reports a fractional mtimeMs, and a card storing '…173.376'
+      // never compares equal to the integer the freshness check reads back, so every run
+      // would re-summarise it and pay for another model call.
+      'mtime: ' + Math.round(fs.statSync(file).mtimeMs),
+      'source: ' + source,
+      '',
+      '## Summary',
+      redact(data.summary),
+      '',
+      '## Topics',
+      data.topics.map(redact).join(', '),
+      '',
+    ].join('\n');
+  // tmp + rename: a reader never sees a half-written card.
+  const tmp = out + '.tmp';
+  fs.writeFileSync(tmp, body);
+  fs.renameSync(tmp, out);
+  return out;
+}
+
+// Returns a status string, never throws. 'short' | 'unchanged' | 'model' | 'fallback' | 'error'
+function digestOne(file, { force = false } = {}) {
+  try {
+    const card = cardPathFor(file);
+    if (!force && fs.existsSync(card) && cardMtime(card) === Math.round(fs.statSync(file).mtimeMs)) {
+      return 'unchanged';
+    }
+    const session = parseSession(file);
+    if (!session) return 'error';
+    const turns = session.turns.filter(
+      (t) => !(t.role === 'user' && INTERRUPT.test(t.text))
+    ).length;
+    if (turns < CARD_TURNS_MIN) return 'short';
+
+    const title = session.title || '(untitled)';
+    const data = summariseSession(title, turns, excerptFor(session));
+    if (data) {
+      writeCard(file, session, turns, data, 'haiku');
+      return 'model';
+    }
+    // A title plus the session's own frequent terms is thin, but it is findable, and a missing
+    // card is not. Marked so a later run can tell the two apart and upgrade it.
+    const terms = keywordsFor(session.turns, 12).map((t) => t.toLowerCase());
+    writeCard(
+      file,
+      session,
+      turns,
+      {
+        summary:
+          'No model summary available for this session; card built from its title and most ' +
+          'frequent terms. Title: "' + title + '". ' + turns + ' turns.',
+        topics: terms.length
+          ? terms
+          : title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean),
+      },
+      'fallback'
+    );
+    return 'fallback';
+  } catch {
+    return 'error';
+  }
+}
+
+// No timer-free sleep exists in Node's stdlib without a dep; Atomics.wait blocks the thread for
+// a fixed span with no packages and no event loop involvement.
+function sleepMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* SharedArrayBuffer unavailable: proceed without the gap */
+  }
+}
+
+// Deliberately walks EVERY session, not SCAN_WINDOW. The window bounds what the startup index
+// prints; applying it here would silently leave the oldest — and often largest — sessions
+// permanently uncarded, which is exactly the invisibility this is meant to fix.
+function cmdDigest(dirs, { id = null, backfill = null, force = false, upgrade = false } = {}) {
+  if (process.env[NO_ENRICH]) return; // `claude -p` is itself a session: this stops the recursion
+
+  const all = sessions(dirs); // newest first
+  let targets;
+  if (upgrade) {
+    targets = all.filter((f) => cardSource(cardPathFor(f)) === 'fallback');
+    console.log(targets.length + ' fallback card(s) to re-try, of ' + all.length + ' session(s).');
+    force = true; // their mtime has not changed; the card being thin is the reason to redo it
+  } else if (backfill !== null) {
+    const n = Number(backfill) || all.length;
+    targets = all.filter((f) => !fs.existsSync(cardPathFor(f))).slice(0, n);
+    console.log(targets.length + ' session(s) without a card, of ' + all.length + ' total.');
+  } else if (id) {
+    targets = all.filter((f) => path.basename(f).startsWith(id));
+    if (!targets.length) {
+      console.log('No session starting with "' + id + '".');
+      return;
+    }
+  } else {
+    return;
+  }
+
+  const tally = { model: 0, fallback: 0, unchanged: 0, short: 0, error: 0 };
+  for (let i = 0; i < targets.length; i++) {
+    const f = targets[i];
+    const r = digestOne(f, { force });
+    tally[r] = (tally[r] || 0) + 1;
+    console.log('  [' + (i + 1) + '/' + targets.length + '] ' + path.basename(f).slice(0, 8) + '  ' + r);
+    if (i < targets.length - 1 && (r === 'model' || r === 'fallback')) sleepMs(1000);
+  }
+  console.log(
+    'cards: ' + tally.model + ' from model, ' + tally.fallback + ' fallback, ' +
+      tally.unchanged + ' already current, ' + tally.short + ' too short, ' +
+      tally.error + ' failed — stored in ' + CARDS
+  );
+}
+
+// Kept OUT of the SessionStart path on purpose: a model call inside a 20s hook can blow the
+// timeout and cost the user the startup listing entirely. Run it explicitly instead.
+function cmdEnrich(dirs, n = 5) {
+  const { store } = buildCache(dirs, { enrich: Number(n) || 5 });
+  const all = Object.values(store);
+  const done = all.filter((e) => (e.aliases || []).length).length;
+  const todo = all.filter((e) => e.turns >= 6 && !(e.aliases || []).length).length;
+  const banner = all.reduce((n, e) => n + (e.banner || 0), 0);
+  console.log(done + " of " + all.length + " sessions have aliases; " + todo + " still to do");
+  console.log(banner + " banner-bearing text turn(s) filtered (see: recall.mjs banners)");
+}
+
+// Visibility for the banner filter. Today this must print 0 for every finished session; a
+// non-zero count on a session nobody pasted into means hook output is being recorded as a
+// real turn, and the filter is the only thing between us and a feedback loop.
+function cmdBanners(dirs) {
+  const { store } = buildCache(dirs);
+  const rows = Object.entries(store).filter(([, e]) => (e.banner || 0) > 0);
+  let total = 0;
+  for (const [key, e] of rows) {
+    total += e.banner;
+    console.log(
+      `  ${e.date}  ${key.slice(0, 8)}  ${String(e.banner).padStart(3)} banner turn(s)  ` +
+        (e.title || '(untitled)')
+    );
+  }
+  console.log(
+    `${total} banner-bearing text turn(s) across ${rows.length} of ${Object.keys(store).length} ` +
+      'session(s) — filtered out of topics and gists, not dropped silently.'
+  );
+}
+
 const [, , cmd, ...rest] = process.argv;
 let all = false;
 let baseDir = null;
+let useStdin = false;
+let force = false;
+let upgrade = false;
+let backfill = null;
 const args = [];
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
   if (a === '--all') all = true;
   else if (a === '--quiet') QUIET = true;
+  else if (a === '--stdin') useStdin = true;
+  else if (a === '--force') force = true;
+  else if (a === '--upgrade') upgrade = true;
+  else if (a === '--backfill') {
+    backfill = /^\d+$/.test(rest[i + 1] || '') ? rest[++i] : '';
+  } else if (a.startsWith('--backfill=')) backfill = a.slice(11);
   else if (a === '--dir') baseDir = rest[++i];
   else if (a.startsWith('--dir=')) baseDir = a.slice(6);
   else args.push(a);
@@ -495,15 +924,52 @@ for (let i = 0; i < rest.length; i++) {
 // placeholder. The same value is also exported as an env var — fall back to it.
 if (baseDir && baseDir.includes('${')) baseDir = process.env.CLAUDE_PROJECT_DIR || null;
 
-const dirs = resolveDir(all, baseDir);
+// resolveDir() calls fail() -> stderr + exit 1, and it runs before dispatch, so on the hook
+// path a resolution failure surfaced as a hook error on EVERY prompt where cmdHook's
+// try/catch could never see it. The hook is quiet by construction now, and resolves its own
+// folder from stdin after the payload has been read.
+const HOOK_ONLY = cmd === 'hook';
+// digest runs from a SessionEnd hook as well as by hand. Quiet either way: a failed card
+// must never make session exit look broken.
+if (HOOK_ONLY || cmd === 'digest') QUIET = true;
+// Neither hook resolves here. Both are handed their folder on stdin, and resolveDir() exits
+// the process on failure -- under QUIET that exit is silent, so a SessionEnd digest launched
+// from a cwd outside the project died before it began. Resolve lazily, inside the branch that
+// actually needs a guess.
+const dirs = HOOK_ONLY || cmd === 'digest' ? null : resolveDir(all, baseDir);
+
+if (HOOK_ONLY) {
+  try {
+    cmdHook({ all, baseDir });
+  } catch {
+    /* a recall failure must never break a prompt */
+  }
+  process.exit(0);
+}
+
+if (cmd === 'digest') {
+  try {
+    const payload = stdinPayload(useStdin);
+    const tp = payload.transcript_path || payload.transcriptPath;
+    // The SessionEnd hook names the session it is ending; a manual run names it by prefix.
+    const one = args[0] || (tp ? path.basename(tp).replace(/\.jsonl$/, '') : null);
+    const where = tp ? [path.dirname(path.resolve(tp))] : resolveDir(all, baseDir);
+    cmdDigest(where, { id: upgrade ? null : one, backfill, force, upgrade });
+  } catch {
+    /* never break session exit */
+  }
+  process.exit(0);
+}
 
 if (cmd === 'list') cmdList(dirs, args[0]);
 else if (cmd === 'search') cmdSearch(dirs, args[0], args[1]);
 else if (cmd === 'show') cmdShow(dirs, args[0], args[1] || 2000);
 else if (cmd === 'outline') cmdShow(dirs, args[0], args[1] || 200, { onlyUser: true });
-else if (cmd === 'index') cmdIndex(dirs, args[0]);
+else if (cmd === 'index')
+  cmdIndex(dirs, args[0], { self: selfFileFrom(stdinPayload(useStdin)) });
 else if (cmd === 'match') cmdMatch(dirs, args[0], args[1]);
-else if (cmd === 'hook') cmdHook(dirs);
+else if (cmd === 'enrich') cmdEnrich(dirs, args[0]);
+else if (cmd === 'banners') cmdBanners(dirs);
 else
   fail(
     'usage:\n' +
@@ -512,5 +978,9 @@ else
       '  recall.mjs outline <session-id-prefix> [chars-per-turn]   # questions only, start here\n' +
       '  recall.mjs show <session-id-prefix> [chars-per-turn]      # full conversation\n' +
       '  recall.mjs index [n] [--dir <path>] [--quiet]             # titles+dates only, for hooks' +
-      '\n  recall.mjs match "<text>" [max]                        # sessions whose topics overlap <text>'
+      '\n  recall.mjs match "<text>" [max]                        # sessions whose topics overlap <text>' +
+      '\n  recall.mjs banners                                       # sessions carrying our own pointer text' +
+      '\n  recall.mjs digest [<id>] [--stdin] [--force]              # write one summary card' +
+      '\n  recall.mjs digest --backfill [n]                          # card every session lacking one' +
+      '\n  recall.mjs digest --upgrade                               # re-try only source: fallback cards'
   );

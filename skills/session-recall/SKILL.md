@@ -40,7 +40,8 @@ Both stop at a 40k-character budget and tell you how many turns were skipped. On
 session, `outline` first, then `search "<keyword>"` to jump to the part you need — do not
 just re-run `show` with a bigger number.
 
-No setup required — the session folder is derived from the current working directory.
+No setup required. The hooks take the session folder from the `transcript_path` in their stdin
+payload; a manual run derives it from the current working directory (or `--dir <path>`).
 Requires Node 18+ on PATH. There is no `jq` dependency.
 
 ## The startup index
@@ -81,8 +82,60 @@ Generic words (`fix`, `error`, `update`, `user`) are excluded from matching -- t
 to half the sessions in any repo and produced hits between unrelated work. Topic terms are
 cached in `.recall-topics.json` beside the transcripts, keyed on mtime; delete it to rebuild.
 
+The matcher's own pointer text is filtered out of topics, gists and query terms, so a pointer
+pasted back into a prompt cannot re-match the session it came from. Claude Code records hook
+output as `type:"attachment"` lines carrying no `message.content`, so the hook does not feed
+itself regardless -- the filter covers the human-paste case and guards against that schema
+changing. Those turns are counted rather than silently dropped:
+
+    node "$SKILL_DIR/recall.mjs" banners
+
+That total should stay near zero. If it climbs on sessions nobody pasted into, hook output has
+started landing in real turns and the filter is the only thing preventing a feedback loop.
+
+The current session is excluded from its own matching and from the startup index. It is
+identified from the hook's stdin payload (`transcript_path`, then `session_id`), with
+`CLAUDE_CODE_SESSION_ID` as a CLI-only fallback -- without that it matches strongly on shared
+vocabulary and is re-parsed in full on every prompt as it grows.
+
 Two honest limits: a session too short to repeat its own subject may yield no topics at all,
-and overlap is lexical, so different vocabulary for the same idea still misses.
+and overlap is lexical, so different vocabulary for the same idea still misses. Summary cards
+below are the answer to the second one.
+
+## Summary cards
+
+Word-frequency topics cannot carry meaning: a session that typed `tailwind` for 200 turns stores
+nothing resembling "colour palette". A card fixes the stored representation rather than the
+scoring -- three sentences of prose plus 12 deliberate search terms, written once per session by
+a model that has actually read an excerpt of the conversation.
+
+    node "$SKILL_DIR/recall.mjs" digest [<id>] [--force]
+    node "$SKILL_DIR/recall.mjs" digest --backfill [n]
+    node "$SKILL_DIR/recall.mjs" digest --upgrade
+
+Cards live in `~/.claude/recall/<project-folder>/<session-id>.md` -- deliberately OUTSIDE the
+transcript folder, because Claude Code's `cleanupPeriodDays` sweep deletes transcripts (30 days
+by default) and does not touch that path. A card outlives the conversation it summarises, which
+is the whole point. One file per session also removes the shared-cache write race.
+
+A `SessionEnd` hook in this plugin's `hooks/hooks.json` digests each session as it closes, so
+cards accrue without anyone remembering to run anything. `--backfill` walks EVERY session, not
+the startup index's 30-file window -- the oldest and largest sessions are exactly the ones that
+would otherwise stay invisible forever.
+
+What the model is shown: the first 3 user turns, up to 5 sampled mid-session user turns, and the
+final assistant turn, each capped at 400 chars, text blocks only, `redact()` applied. Mid-session
+sampling is not decoration -- sessions routinely end up somewhere unrelated to their opening
+question, and a head-and-tail excerpt would miss the pivot.
+
+Sessions under 4 turns are skipped. A session whose card is current for the transcript's mtime is
+skipped without a model call. If the `claude` CLI is missing or its reply is unusable, a fallback
+card is written from the title plus frequent terms and marked `source: fallback` -- a thin card is
+findable, a missing one is not. `--upgrade` re-tries exactly those, ignoring mtime, because a
+session that hit a rate limit would otherwise report `unchanged` forever and keep its thin card.
+
+`digest` never throws and always exits 0. `RECALL_NO_ENRICH=1` is set in the child environment
+because `claude -p` starts a session of its own, which fires `SessionEnd`, which would recurse.
 
 ## How to search well
 

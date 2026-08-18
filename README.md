@@ -237,7 +237,7 @@ dp-agent's own skills chain into each other.
 
 ## Hooks
 
-`hooks/hooks.json` registers two `PreToolUse` guardrails plus two recall hooks.
+`hooks/hooks.json` registers two `PreToolUse` guardrails plus three recall hooks.
 
 ### Guardrails
 
@@ -260,20 +260,26 @@ hook's JSON stdin if it isn't — no hard dependency either way.
 
 ### Session recall
 
-Two hooks wire up the `session-recall` skill so past work resurfaces without anyone asking
+Three hooks wire up the `session-recall` skill so past work resurfaces without anyone asking
 for it:
 
 - **`SessionStart`** lists recent sessions for the current project — dates, titles and the
   subjects each one covered. No conversation content, so it costs almost nothing.
 - **`UserPromptSubmit`** compares every prompt against those subjects and prints a short
   pointer when the overlap is real. Below the threshold it prints nothing at all.
+- **`SessionEnd`** writes a summary card for the session that just closed: one `claude -p
+  --model haiku` call over an excerpt of the conversation, producing three sentences and a
+  dozen search terms. Cards are stored in `~/.claude/recall/<project>/`, deliberately outside
+  the transcript folder — Claude Code deletes transcripts after `cleanupPeriodDays` (30 by
+  default) and never touches that path, so the summary outlives the conversation. Existing
+  history is filled in once with `recall.mjs digest --backfill`.
 
 This matters most when someone new picks up a machine or a project: they ask an ordinary
 forward-looking question, unaware the ground was covered weeks ago, and the pointer surfaces
 anyway. Matching is on subject, not phrasing — no "did we already try this" required.
 
-Needs Node 18+ on `PATH`. Both hooks exit `0` on any failure, so a problem here can never
-block a prompt. Transcripts are read locally and never leave the machine; quoted text is
+Needs Node 18+ on `PATH`. All three hooks exit `0` on any failure, so a problem here can never
+block a prompt or a session exit. Transcripts are read locally and never leave the machine; quoted text is
 scrubbed of anything key-shaped before it is shown.
 
 ## Tuning the templates
