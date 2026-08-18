@@ -35,20 +35,19 @@ repo.
 
 ## 2. What was built
 
-Four layers now. Only the fourth depends on model judgement.
+Three layers. None of them depends on model judgement, and nothing calls a model.
 
 | Layer | Trigger | Enforced by | Output |
 | --- | --- | --- | --- |
 | Startup index | session start | `SessionStart` hook | ~12 session titles + topic terms |
 | Prompt matcher | every prompt | `UserPromptSubmit` hook | 0–3 pointers, or nothing |
-| Summary card | session end | `SessionEnd` hook | one card per session, written once |
 | The skill | Claude decides | `description` matching | `outline` / `search` / `show` |
 
-**Three hooks, not two.** `SessionEnd` runs `recall.mjs digest`, which makes ONE `claude -p
---model haiku` call per session and writes a summary card to `~/.claude/recall/<project>/`.
-Cards live outside the transcript folder deliberately: Claude Code's `cleanupPeriodDays` sweep
-deletes transcripts after 30 days and does not touch that path, so a card outlives the
-conversation it came from. `digest --backfill` walks every session, not the 30-file scan window.
+**Two hooks.** There was briefly a third: a `SessionEnd` hook running `recall.mjs digest`, which
+made one `claude -p --model haiku` call per session and wrote a summary card to
+`~/.claude/recall/<project>/`. That layer was removed in v0.8.0 — see section 7c for what it
+bought, what it cost, and why it should not be rebuilt. Everything is matched against
+`.recall-topics.json`, keyed on transcript mtime, built with no model and no network.
 
 **Distribution note — the local-copy detour.** This packet describes the skill as shipped via
 `${CLAUDE_PLUGIN_ROOT}` in the dp-agent plugin, and that is still where it lives. But the work
@@ -57,7 +56,7 @@ recorded in sections 7 onward was carried out against a **local copy** in a sing
 `${CLAUDE_PROJECT_DIR}` paths), because iterating on a plugin means reinstalling it to see each
 change. The local copy and the plugin drifted: the plugin sat at `CACHE_V = 2` with no alias
 layer while the local copy gained aliases, banner filtering, self-exclusion, transcript-path
-resolution and summary cards. They were reconciled by merging back into the plugin, and the
+resolution and summary cards. As of v0.8.0 the two are byte-identical apart from line endings. They were reconciled by merging back into the plugin, and the
 local copy must be removed at the moment the plugin is enabled for a project — not after — or
 both sets of hooks fire and every prompt gets two pointers.
 
@@ -151,20 +150,11 @@ pointer from B already in context         user happens to phrase it as recall
                   transcripts, text blocks only, 40k budget
 ```
 
-### D · Alias enrichment (offline, explicit)
+### D · Alias enrichment — REMOVED in v0.8.0
 
-```
-recall.mjs enrich [n]
-     |
-     |  for up to n sessions with >= 6 turns and no aliases yet:
-     v
-claude -p "10 alias keywords for: title=... subject=..." --model haiku
-     |
-     |  RECALL_NO_ENRICH=1 in the child env
-     |  (the child is itself a session -> fires SessionStart -> would recurse)
-     v
-store phrase + its word parts in .recall-topics.json
-```
+`enrich` spawned `claude -p ... --model haiku` per session to generate alias keywords. It stopped
+working the moment `CACHE_V` went from 3 to 4 (rebuilt entries start with `aliases: []` and nobody
+re-ran it), and it was deleted in v0.8.0 along with the cards. See section 7c.
 
 ---
 
@@ -178,20 +168,25 @@ store phrase + its word parts in .recall-topics.json
 | 224 | `keywordsFor` | topic extraction: user turns only, terms seen twice+, identifier-shaped terms qualify on one mention |
 | 263 | `cmdIndex` | startup listing, 30-file scan window, 70-char title cap |
 | 321 | `gistOf` + `redact` | opening ask + final reply, 200 chars each, secrets scrubbed |
-| 349 | `aliasesFor` | `claude -p` alias generation, recursion-guarded |
-| 400 | `buildCache` | mtime + version keyed cache, optional enrichment budget |
-| 460–500 | `queryTerms`, `cmdMatch` | scoring and thresholds |
-| 540 | `cmdHook` | stdin entry point, never throws |
+| 364 | `buildCache` | mtime + version keyed cache |
+| 421–474 | `queryTerms`, `indexEntry`, `buildMatcher` | what is indexed, and at what weight |
+| 489–551 | `promptTerms`, `expandSpelling`, `applyRarity`, `candidates`, `scoreText` | scoring |
+| 552 | `cmdMatch` | thresholds and the printed pointer |
+| 734–785 | `stdinPayload`, `dirsFromPayload`, `selfFileFrom`, `cmdHook` | hook entry, never throws |
+| 584 | `cmdEval` | reproducible scoring against `evals.json`, no model call |
+| 796 | `cmdDoctor` | runs both hooks as child processes and fails loudly |
 
 ### Key constants
 
 ```
 SCAN_WINDOW = 30      files parsed at session start
-CACHE_V     = 3       bump invalidates every cached entry
-topics      = 14      terms stored per session
+CACHE_V     = 5       bump invalidates every cached entry
+TOPICS_N    = 14      terms stored per session  (named constant since v0.8.0)
 gist cap    = 200     chars for ask / outcome
 threshold   = hits >= 2 AND score >= 6
-rarity      = df <= 2 -> x2,  df <= 5 -> x1.5,  else x1
+weights     = title x2,  topic x1   (a term in both takes the higher, not the sum)
+rarity      = df <= 2 -> x2,  df <= 5 -> x1.5,  else x1   (df over stored topics only)
+MAX_HITS    = 3       pointers printed
 ```
 
 ---
@@ -383,7 +378,7 @@ paraphrase that used to match stopped matching, which is why the baseline here i
 bump silently discarding a whole layer of enrichment is worth knowing about before bumping the
 next one.
 
-### Verdict
+### Verdict  — SUPERSEDED, see section 7c
 
 Lexical matching over model-written cards moved paraphrase recall from unreachable to nearly
 reachable: baseline misses scored ZERO, whereas the remaining misses now rank first or second and
@@ -393,10 +388,103 @@ Nothing else needs to change: cards, the digest pipeline, all three hooks, `--ba
 `--upgrade` and this eval harness are all representation-agnostic; only `cardCandidates` computes
 similarity.
 
+**That recommendation was not taken.** Cards were removed in v0.8.0 without ever running
+as a plugin. The numbers above stand as measured; section 7c records what happened next and why.
+
+## 7c. Cards were built, measured, and removed — do not rebuild them
+
+**Read this before proposing summary cards again.** They were tried in full, measured with the
+harness in 7b, and deleted in v0.8.0 (`e840adf`). The rollback tag `cards-v0.7.1` holds the
+complete implementation if it is ever wanted back.
+
+### What they were
+
+One model-written `.md` per session in `~/.claude/recall/<project>/` — three sentences of prose plus
+12 deliberate search terms, produced by a `claude -p --model haiku` call from a `SessionEnd` hook,
+matched against instead of the topic cache.
+
+### Why they were removed
+
+Not because they failed on their own terms. Because of what they cost against what they bought:
+
+- A **model call per session close**, on a hook whose entire job is to be silent and cheap.
+- A **second store** outside the transcript folder, with its own backfill, upgrade and
+  fallback-card paths, and its own failure mode (`source: fallback` cards that look real).
+- **861 lines**, 1377 vs 516 — more than the rest of the system put together.
+- They **never ran as a plugin.** The installed dp-agent was 0.4.1, which ships no session-recall
+  at all; v0.5.0-v0.7.1 only ever executed as a loose copy in one project. The measured benefit was
+  never actually delivered to anyone.
+
+### Before / after, same harness, same corpus
+
+| | cards v0.7.1 | stripped v0.8.0 |
+|---|---|---|
+| paraphrase, strict (target ranks first) | 1/4 | 0/4 |
+| paraphrase, lenient | 2/4 | 0/4 |
+| precision (silent set) | 17/20 | 19/20 |
+| lines | 1377 | 963 |
+| model calls | 3 | 0 |
+| hooks | 3 | 2 |
+
+Cards bought **one** paraphrase case, strict, and cost two points of precision. That is the whole
+trade. Anyone proposing to rebuild them needs a better answer than "it should help".
+
+### The easy baseline, 2026-08-19 — what actually limits recall
+
+The paraphrase cases were the wrong first target. Before asking the scorer to bridge vocabulary
+gaps, ask whether the session is stored richly enough to be found by its *own* words. 15 cases were
+added (`easy: true`), each built from wording taken from the target session's transcript and
+verified via `outline`, spread from 1 turn to 406:
+
+```
+EASY SET          10/15   target session own words, ranked FIRST
+  lenient         12/15   target anywhere in the shown hits
+precision         19/20   unchanged
+```
+
+### The stored-representation distribution — the real ceiling
+
+From `.recall-topics.json`, 99 sessions:
+
+| stored topics | sessions | |
+|---|---|---|
+| 0 | 60 | 61% |
+| 1-2 | 3 | 3% |
+| 3-5 | 4 | 4% |
+| 6-10 | 3 | 3% |
+| 11-14 | 29 | 29% |
+
+Median **0**. Mean 4.5. 28 sessions sit at the `TOPICS_N = 14` cap. The distribution is bimodal:
+either a session stores nothing, or it stores the maximum. Almost nothing lands in between, because
+`keywordsFor` requires a term to appear **twice**, and a short session repeats nothing.
+
+It correlates almost perfectly with length: **90% of 1-3 turn sessions store zero topics**, versus
+0% of sessions over 12 turns.
+
+**But zero topics does not mean unreachable, and this is the finding that matters.** The session
+*title* is indexed too, at double weight. Of the 60 zero-topic sessions, **54 are still reachable by
+title alone** — four of the six easy cases targeting <=2-topic sessions passed on title words only.
+The true dead zone is sessions that are **both untitled and topic-less: 6 of 99.**
+
+So the ceiling is not "61% of sessions are invisible". It is:
+
+1. **6 sessions are genuinely invisible** (untitled + no topics) — e.g. `ccda60ba`, "fix the ruff
+   N818 lint error", and `91efb6b3`, "msal login keeps failing in the e2e run". Both scored ZERO on
+   their own verbatim opening sentence. `ruff`, `N818` and `msal` are exactly the identifier-shaped
+   terms the scorer weights highest, and not one of them is stored anywhere.
+2. **54 sessions hang entirely on their auto-generated title** — a 3-to-8-word summary someone else
+   wrote. Lose the title and they join group 1.
+3. **Ranking, not retrieval, is the other half.** Two of the three remaining easy misses were found
+   and shown but outranked by a session with a fuller topic set (`3d53c1be` lost to `5416e4f7`;
+   `3d571d19` ranked 9th behind `f20f2e71`). Those are threshold and weighting problems, reachable
+   by tuning.
+
+---
+
 ## 8. Known weaknesses — review these hardest
 
 1. **Cache write race.** `buildCache` reads the whole file, mutates, and writes it back. Two
-   concurrent runs (a prompt hook firing while `enrich` is running) clobber each other. No locking,
+   concurrent runs (two prompt hooks firing at once) clobber each other. No locking,
    no atomic rename. Not yet observed causing loss — an apparent case turned out to be a read taken
    mid-run — but the hazard is real and unguarded.
 2. **Alias input is too thin — the biggest known weakness.** Generated from title + 8 topic terms

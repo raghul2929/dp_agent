@@ -615,6 +615,10 @@ function cmdEval(dirs, file) {
   // it to RANK FIRST. The difference is not cosmetic: a lenient pass can depend entirely on
   // MAX_HITS, so a display setting would decide the score. Strict is the honest number.
   let origHitStrict = 0;
+  // The easy set: prompts built from each target session's OWN words. Counted apart from the
+  // paraphrase cases because they measure a different thing -- not whether the scorer is clever,
+  // but whether the session was stored richly enough to be reachable at all.
+  let easyHit = 0, easyHitStrict = 0, easyTotal = 0;
   let silentOk = 0, silentTotal = 0, silentOkNoSelf = 0;
 
   for (const c of cases) {
@@ -637,11 +641,16 @@ function cmdEval(dirs, file) {
       recallTotal++;
       if (!c.broken) recallTotalReal++;
       if (c.original && !c.broken) origTotal++;
+      if (c.easy && !c.broken) easyTotal++;
       ok = shown.some((h) => wantIds.some((w) => h.key.startsWith(w)));
       const lead = shown[0] && wantIds.some((w) => shown[0].key.startsWith(w));
       if (ok) {
         recallHit++;
         if (!c.broken) recallHitReal++;
+        if (c.easy && !c.broken) {
+          easyHit++;
+          if (lead) easyHitStrict++;
+        }
         if (c.original && !c.broken) {
           origHit++;
           if (lead) origHitStrict++;
@@ -682,6 +691,14 @@ function cmdEval(dirs, file) {
   );
   console.log(
     '  lenient         ' + origHit + '/' + origTotal +
+      '   same cases, target anywhere in the shown hits'
+  );
+  console.log(
+    'EASY SET          ' + easyHitStrict + '/' + easyTotal +
+      '   target session own words, ranked FIRST'
+  );
+  console.log(
+    '  lenient         ' + easyHit + '/' + easyTotal +
       '   same cases, target anywhere in the shown hits'
   );
   console.log(
