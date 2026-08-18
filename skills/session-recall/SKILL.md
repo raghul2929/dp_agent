@@ -79,8 +79,36 @@ Quoted turn text is scrubbed for anything key-shaped — API keys, bearer tokens
 this path injects turn text automatically. Bump `CACHE_V` after changing what is cached.
 
 Generic words (`fix`, `error`, `update`, `user`) are excluded from matching -- they are common
-to half the sessions in any repo and produced hits between unrelated work. Topic terms are
-cached in `.recall-topics.json` beside the transcripts, keyed on mtime; delete it to rebuild.
+to half the sessions in any repo and produced hits between unrelated work.
+
+**What is matched is the summary cards, not the transcripts.** A card's title, topics and summary
+prose are indexed; `.recall-topics.json` is now only used by `banners`. Topic phrases are indexed
+whole AND split into parts, so a query saying `palette` reaches a card storing `color-palette`, and
+document frequency counts the parts too -- counting only whole phrases would leave every part at
+df=0, which the rarity scale reads as maximally rare, inflating every score at once. A term found
+in several fields takes the highest weight rather than the sum. British/American spellings are
+normalised, but only to a variant the corpus already contains: an unknown word can never become a
+match by being rewritten.
+
+A project with no cards yet stays silent rather than guessing from thinner data. Run
+`digest --backfill` once to fill it in.
+
+Accepted hits need at least 2 matching terms AND a score of 4. Output is capped at 2 hits and 900
+characters, with each summary clipped to 150 -- two readable pointers beat three cramped ones.
+
+## Measuring a change to the matcher
+
+    node "$SKILL_DIR/recall.mjs" eval $SKILL_DIR/evals.json
+
+Scores the matcher against a case file, using the same code path the hook uses, with no model call.
+Every case names the session that did the work and why; cases with no true answer are marked
+`broken` and excluded from the denominator. A pass requires the target to rank FIRST -- counting it
+as a pass when it merely appears would let `MAX_HITS` decide the score.
+
+**Do not tune thresholds without re-running this, and do not trust a small silent set.** Relaxing
+the hit floor to 1 reaches the recall bar and drops precision from 17/20 to 13/20, firing on single
+ordinary words like `border` and `click`. That experiment has already been run -- see
+DESIGN-REVIEW.md section 7b for the numbers and the sampling method.
 
 The matcher's own pointer text is filtered out of topics, gists and query terms, so a pointer
 pasted back into a prompt cannot re-match the session it came from. Claude Code records hook

@@ -265,8 +265,13 @@ for it:
 
 - **`SessionStart`** lists recent sessions for the current project — dates, titles and the
   subjects each one covered. No conversation content, so it costs almost nothing.
-- **`UserPromptSubmit`** compares every prompt against those subjects and prints a short
-  pointer when the overlap is real. Below the threshold it prints nothing at all.
+- **`UserPromptSubmit`** compares every prompt against the summary cards -- their titles, topics
+  and summary prose -- and prints a short pointer when the overlap is real. Below the threshold it
+  prints nothing at all, which is the common case. Capped at two hits and 900 characters.
+  Measured on one 96-session corpus: 17 of 20 ordinary prompts stay silent (19 of 20 once
+  self-matches are excluded), and 1 of 4 paraphrase cases finds its session ranked first.
+  `recall.mjs eval` reproduces those numbers; `skills/session-recall/DESIGN-REVIEW.md` section 7b
+  records what was tried, what was rejected, and why the obvious relaxation must not be applied.
 - **`SessionEnd`** writes a summary card for the session that just closed: one `claude -p
   --model haiku` call over an excerpt of the conversation, producing three sentences and a
   dozen search terms. Cards are stored in `~/.claude/recall/<project>/`, deliberately outside

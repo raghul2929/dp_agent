@@ -489,91 +489,369 @@ function queryTerms(text) {
   return out;
 }
 
-function cmdMatch(dirs, text, max = 3, { self: selfArg = null } = {}) {
-  if (!text) fail('match needs text: recall.mjs match "<prompt text>" [max]');
-  // A pasted pointer is our own wording, not the user's. Scoring on it re-matches the very
-  // session we already pointed at.
+// --- scoring: summary cards are what we match against ---------------------------------
+// Word frequency was never a representation of meaning. A session that typed "tailwind" for
+// 200 turns stored no term resembling "colour palette", so the paraphrase could not reach it at
+// any threshold -- the miss was in what was stored, not in how it was scored. Matching now runs
+// against the cards: title, the model's chosen topics, and the summary prose.
+const HIT_MIN = 2;
+// 6 was calibrated for the old representation, where one identifier-shaped term could score
+// 3 (identish) x 2 (rarity) x 2 (title) = 12. Card scoring tops out at 2 (topic or title) x 2
+// (rarity) x 1 (an ordinary word -- paraphrases are never identifier-shaped) = 4 per term, so
+// the same bar demanded roughly three times the evidence it used to. 4 is the equivalent line
+// on the new scale, not a loosening of it.
+const SCORE_MIN = 4;
+const accepted = (c) => c.hits.length >= HIT_MIN && c.score >= SCORE_MIN;
+
+// A hook that talks too much gets uninstalled, so the pointer is capped hard.
+// 2, not 3: at OUT_MAX = 900 with 150-char summaries only two hits fit, and two readable
+// pointers beat three cramped ones. The constant now describes what actually happens.
+const MAX_HITS = 2;
+// 900 chars is ~225 tokens -- nothing beside the ~8k an `outline` costs, and at 600 only one
+// hit ever fit, which made MAX_HITS = 3 a fiction. A pointer offering one option is not a choice.
+const OUT_MAX = 900;
+const SUM_CAP = 150; // per-hit summary clip: at 200 only two hits fit, making MAX_HITS a fiction
+
+// Where a term was found decides what it is worth. A title word and a topic phrase are
+// deliberate labels for the whole session; a word inside a phrase is real but weaker evidence;
+// summary prose is the broadest and weakest. A term found in several fields takes the highest
+// weight rather than the sum -- otherwise a word that happens to sit in both the topics and the
+// summary counts twice for saying one thing.
+const W_TITLE = 2;
+const W_TOPIC = 2;
+const W_PART = 1;
+const W_SUMMARY = 1;
+
+function loadCards(dirs) {
+  const out = {};
+  for (const d of dirs) {
+    const dir = path.join(CARDS, path.basename(d));
+    let files;
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
+    } catch {
+      continue; // no cards for this project yet: digest --backfill has not run
+    }
+    for (const f of files) {
+      let raw;
+      try {
+        raw = fs.readFileSync(path.join(dir, f), 'utf8');
+      } catch {
+        continue;
+      }
+      const grab = (re) => {
+        const m = raw.match(re);
+        return m ? m[1].trim() : '';
+      };
+      const summary = (raw.split('## Summary')[1] || '')
+        .split('## Topics')[0]
+        .replace(/\s+/g, ' ')
+        .trim();
+      const topics = (raw.split('## Topics')[1] || '')
+        .trim()
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .filter(Boolean);
+      out[f.replace(/\.md$/, '')] = {
+        title: grab(/^# (.+)$/m),
+        date: grab(/^date:\s*(.+)$/m),
+        turns: Number(grab(/^turns:\s*(\d+)/m)) || 0,
+        source: grab(/^source:\s*(\S+)/m),
+        summary,
+        topics,
+      };
+    }
+  }
+  return out;
+}
+
+// Topics come back from the model as phrases -- "color-palette", "reload-plugins command",
+// "date-range". Stored whole, a query saying "palette" or "routing" reaches none of them, so
+// each phrase is indexed as itself AND as its parts. This is the same trick aliasesFor used.
+function indexCard(card) {
+  const terms = new Map();
+  const put = (raw, w) => {
+    const t = String(raw).toLowerCase().replace(/^[./-]+|[./-]+$/g, '');
+    if (t.length < 3 || t.length > 40) return;
+    if (STOP.has(t) || GENERIC.has(t)) return;
+    if (/^[0-9a-f-]{8,}$/i.test(t)) return; // uuids, hashes, session ids
+    terms.set(t, Math.max(terms.get(t) || 0, w));
+  };
+
+  for (const w of (card.title || '').toLowerCase().split(/[^a-z0-9_.-]+/)) put(w, W_TITLE);
+  for (const phrase of card.topics || []) {
+    put(phrase, W_TOPIC);
+    // Only split when there is something to split: a single-word topic is already its part.
+    if (/[^a-z0-9]/.test(phrase)) {
+      for (const part of phrase.split(/[^a-z0-9]+/)) put(part, W_PART);
+    }
+  }
+  for (const w of (card.summary || '').match(/[A-Za-z_][A-Za-z0-9_./-]{2,}/g) || []) {
+    put(w, W_SUMMARY);
+  }
+  return terms;
+}
+
+// Rarity is measured over EVERY indexed term, parts included. Counting only whole phrases would
+// leave every part at df=0, which the rarity scale reads as maximally rare and doubles -- every
+// score would inflate at once and a pass would mean nothing.
+function buildMatcher(dirs) {
+  const cards = loadCards(dirs);
+  const index = {};
+  const df = new Map();
+  for (const [id, card] of Object.entries(cards)) {
+    const terms = indexCard(card);
+    index[id] = { card, terms };
+    for (const t of terms.keys()) df.set(t, (df.get(t) || 0) + 1);
+  }
+  return { cards, index, df, size: Object.keys(index).length };
+}
+
+// A pasted pointer is our own wording, not the user's. Scoring on it re-matches the very
+// session we already pointed at.
+function promptTerms(text) {
   const cleanText = String(text)
     .split('\n')
     .filter((l) => !l.includes(BANNER_MARK) && !OURS_LINE.test(l))
     .join('\n');
-  const q = queryTerms(cleanText);
-  if (!q.size) return;
+  return queryTerms(cleanText);
+}
 
-  // The live session shares all of the current prompt's vocabulary, so it matches strongly
-  // and buries real prior work; its mtime also changes every turn, so it misses the cache and
-  // is fully re-parsed on every prompt as it grows toward 15MB. Hooks are handed the current
-  // session on stdin — the env var is only a fallback for manual CLI runs.
-  const self =
-    selfArg ||
-    (process.env.CLAUDE_CODE_SESSION_ID ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl' : null);
-  const { store } = buildCache(dirs);
+// British and American spellings that genuinely differ in developer prose. A variant is only
+// ever added when the corpus ALREADY contains it -- we never invent vocabulary, so an unknown
+// word cannot become a match by being rewritten, and the df it lands on is a real one.
+// Measured on the 20-prompt silent set: converts the colour/color case at no precision cost.
+const SPELLING = [[/^colour/, 'color'], [/our(s?)$/, 'or$1'], [/ise$/, 'ize'], [/isation$/, 'ization']];
 
-  // Rarity is measured from the corpus, not hand-maintained: "playwright" (2 sessions)
-  // is strong evidence, "skill" (7) is weak, and a flat weight cannot tell them apart.
-  const df = new Map();
-  for (const s2 of Object.values(store)) {
-    const bag = [...(s2.topics || []), ...(s2.aliases || [])];
-    for (const t of new Set(bag.map((x) => x.toLowerCase()))) {
-      df.set(t, (df.get(t) || 0) + 1);
+function expandSpelling(q, df) {
+  for (const [term, w] of [...q]) {
+    for (const [re, to] of SPELLING) {
+      const alt = term.replace(re, to);
+      if (alt !== term && df.has(alt) && !q.has(alt)) q.set(alt, w);
     }
   }
-  const rarity = (t) => { const d = df.get(t) || 0; return d <= 2 ? 2 : d <= 5 ? 1.5 : 1; };
-  for (const [term, w] of q) q.set(term, w * rarity(term));
+  return q;
+}
 
-  const scored = [];
-  for (const [key, s] of Object.entries(store)) {
-    if (key === self) continue;
-    const topics = new Set((s.topics || []).map((t) => t.toLowerCase()));
-    const aliases = new Set((s.aliases || []).map((t) => t.toLowerCase()));
-    const titleWords = new Set(
-      (s.title || '').toLowerCase().split(/[^A-Za-z0-9_.-]+/).filter(Boolean)
-    );
+function applyRarity(df, q) {
+  const rarity = (t) => {
+    const d = df.get(t) || 0;
+    return d <= 2 ? 2 : d <= 5 ? 1.5 : 1;
+  };
+  for (const [term, w] of q) q.set(term, w * rarity(term));
+  return q;
+}
+
+// Every candidate, sorted, threshold NOT applied -- the evaluator needs to see near misses.
+// Tie-break toward the longer session: where two match equally well, the one that ran 400 turns
+// is where the work happened, not the one that ran 1.
+function cardCandidates(m, q, self) {
+  const selfId = self ? String(self).replace(/\.jsonl$/, '') : null;
+  const out = [];
+  for (const [id, entry] of Object.entries(m.index)) {
+    if (selfId && id === selfId) continue;
     let score = 0;
     const hits = [];
     for (const [term, w] of q) {
-      const inAlias = aliases.has(term);
-      const inTopics = topics.has(term);
-      const inTitle = titleWords.has(term);
-      if (!inTopics && !inTitle && !inAlias) continue;
-      // An alias is a deliberate semantic marker for this session, so it carries the same
-      // weight as a title hit. At x1 it could never clear a threshold calibrated for titles.
-      score += w * (inTitle || inAlias ? 2 : 1);
+      const cw = entry.terms.get(term);
+      if (!cw) continue;
+      score += w * cw;
       hits.push(term);
     }
-    // Two ordinary shared words are coincidence. Accept either strong evidence (an
-    // identifier-shaped term, or several title hits) or a broad overlap of weak terms.
-    if (hits.length >= 2 && score >= 6) scored.push({ key, s, score, hits });
+    if (score > 0) out.push({ key: id, s: entry.card, score, hits });
   }
-  if (!scored.length) return;
-
-  // Tie-break toward the longer session: where two match equally well, the one that ran
-  // 400 turns is where the work happened, not the one that ran 1.
-  scored.sort((a, b) => b.score - a.score || b.s.turns - a.s.turns);
-  const top = scored.slice(0, Number(max) || 3);
-
-  console.log(BANNER);
-  for (const { key, s, hits } of top) {
-    const id = key.slice(0, 8);
-    console.log('  ' + s.date + '  ' + id + '  ' + String(s.turns).padStart(3) + ' turns  ' + (s.title || '(untitled)'));
-    console.log('      overlaps: ' + hits.slice(0, 8).join(', '));
-    if (s.ask) console.log('      asked: ' + s.ask);
-    // In a short session the final reply is usually incidental, not a conclusion — only
-    // quote it once the conversation was long enough to have arrived somewhere.
-    if (s.outcome && s.turns >= 6) console.log('      ended: ' + s.outcome);
-  }
-  console.log('Read one with: recall.mjs outline <id>   (then search "<term>" for detail)');
+  out.sort((a, b) => b.score - a.score || b.s.turns - a.s.turns);
+  return out;
 }
 
-// Hook payloads arrive as JSON on stdin. Read it ONLY when the caller says so: a bare
-// readFileSync(0) blocks until EOF when stdin is an idle terminal or an inherited pipe,
-// which would hang a manual CLI run.
-function stdinPayload(enabled) {
-  if (!enabled) return {};
+function scoreText(m, text, self) {
+  const q = promptTerms(text);
+  if (!q.size) return [];
+  // Spelling variants are added BEFORE rarity, so each one is weighted by its own document
+  // frequency rather than inheriting the weight of the word the user actually typed.
+  return cardCandidates(m, applyRarity(m.df, expandSpelling(q, m.df)), self);
+}
+
+function cmdMatch(dirs, text, max = MAX_HITS, { self: selfArg = null } = {}) {
+  if (!text) fail('match needs text: recall.mjs match "<prompt text>" [max]');
+  // The live session shares all of the current prompt's vocabulary, so it matches strongly and
+  // buries real prior work. Hooks are handed the current session on stdin; env is a CLI fallback.
+  const self =
+    selfArg ||
+    (process.env.CLAUDE_CODE_SESSION_ID ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl' : null);
+
+  const m = buildMatcher(dirs);
+  if (!m.size) return; // no cards yet -- silence, not a guess from thinner data
+  const scored = scoreText(m, text, self).filter(accepted);
+  if (!scored.length) return;
+
+  const trailer = 'Read one with: recall.mjs outline <id>   (then search "<term>" for detail)';
+  const lines = [BANNER];
+  let shown = 0;
+
+  for (const { key, s, hits } of scored.slice(0, Number(max) || MAX_HITS)) {
+    const head =
+      '  ' + s.date + '  ' + key.slice(0, 8) + '  ' + String(s.turns).padStart(3) +
+      ' turns  ' + (s.title || '(untitled)');
+    const matched = '      matched: ' + hits.slice(0, 6).join(', ');
+    // Measure what the output would ACTUALLY be rather than estimating the overhead: the cap is
+    // a promise about how much lands in the prompt, so it has to be counted exactly.
+    const room = Math.min(
+      SUM_CAP,
+      OUT_MAX - [...lines, head, matched, '      ', trailer].join('\n').length
+    );
+    if (room < 80 && shown) break; // a stub helps no one: stop rather than print a fragment
+    const sum =
+      s.summary.length > room ? s.summary.slice(0, Math.max(0, room - 1)) + '…' : s.summary;
+    lines.push(head, matched, '      ' + sum);
+    shown++;
+  }
+  lines.push(trailer);
+  console.log(lines.join('\n'));
+}
+
+// --- evaluation -----------------------------------------------------------------------
+// Runs the SAME code path the hook runs, with no model call, so a score is reproducible and a
+// change is attributable. Before/after numbers are only comparable if they came from here.
+function cmdEval(dirs, file) {
+  if (!file) fail('usage: recall.mjs eval <file.json>');
+  let entries;
   try {
-    return JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
-  } catch {
-    return {};
+    entries = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    fail('could not read ' + file + ': ' + e.message);
+  }
+  if (!Array.isArray(entries)) fail('expected a JSON array of cases');
+  // Entries without a prompt are notes kept alongside the cases, not cases.
+  const cases = entries.filter((c) => c && typeof c.prompt === 'string');
+
+  const m = buildMatcher(dirs);
+  const self = process.env.CLAUDE_CODE_SESSION_ID
+    ? process.env.CLAUDE_CODE_SESSION_ID + '.jsonl'
+    : null;
+  console.log('matching against ' + m.size + ' card(s), ' + m.df.size + ' indexed terms');
+
+  const pad = (s, n) => (String(s) + ' '.repeat(n)).slice(0, n);
+  console.log(
+    pad('EXPECT', 7) + pad('ACTUAL', 7) + pad('OK', 5) + pad('PROMPT', 49) +
+      pad('TOP HIT', 10) + pad('SCORE', 7) + 'HITS'
+  );
+  console.log('-'.repeat(104));
+
+  const near = [];
+  let recallHit = 0, recallTotal = 0, recallHitReal = 0, recallTotalReal = 0;
+  // The bar was set on the cases that existed when it was set. A case added later cannot move
+  // it, whether it passes or fails, so the original set is counted separately and reported first.
+  let origHit = 0, origTotal = 0;
+  // Lenient counts a pass when the target appears anywhere in the shown hits; strict requires
+  // it to RANK FIRST. The difference is not cosmetic: a lenient pass can depend entirely on
+  // MAX_HITS, so a display setting would decide the score. Strict is the honest number.
+  let origHitStrict = 0;
+  let silentOk = 0, silentTotal = 0, silentOkNoSelf = 0;
+
+  for (const c of cases) {
+    const cands = scoreText(m, c.prompt, self);
+    const shown = cands.filter(accepted);
+    const actual = shown.length ? 'match' : 'silent';
+    const top = shown[0] || cands[0] || null;
+    const wantIds = c.accept || (c.session ? [c.session] : []);
+
+    let ok;
+    if (c.expect === 'silent') {
+      silentTotal++;
+      ok = actual === 'silent';
+      if (ok) silentOk++;
+      // A prompt lifted from session X often matches X: X's card summarises the very
+      // conversation that prompt was part of. Live, the current session is excluded, so that
+      // hit could never fire. Counted separately rather than quietly forgiven.
+      if (ok || (c.from && shown[0] && shown[0].key.startsWith(c.from))) silentOkNoSelf++;
+    } else {
+      recallTotal++;
+      if (!c.broken) recallTotalReal++;
+      if (c.original && !c.broken) origTotal++;
+      ok = shown.some((h) => wantIds.some((w) => h.key.startsWith(w)));
+      const lead = shown[0] && wantIds.some((w) => shown[0].key.startsWith(w));
+      if (ok) {
+        recallHit++;
+        if (!c.broken) recallHitReal++;
+        if (c.original && !c.broken) {
+          origHit++;
+          if (lead) origHitStrict++;
+        }
+        if (!lead) {
+          near.push({
+            prompt: c.prompt,
+            want: wantIds.join('|'),
+            weak: shown[0].key.slice(0, 8) + ' (' + shown[0].score.toFixed(1) + ') leads instead',
+          });
+        }
+      } else {
+        // Did the right session score at all but fall short? That is a threshold problem.
+        // Scoring zero is a vocabulary problem, and no threshold reaches it.
+        const rank = cands.findIndex((h) => wantIds.some((w) => h.key.startsWith(w)));
+        near.push({
+          prompt: c.prompt,
+          want: wantIds.join('|'),
+          rank: rank < 0 ? null : rank + 1,
+          cand: rank < 0 ? null : cands[rank],
+          broken: !!c.broken,
+        });
+      }
+    }
+
+    console.log(
+      pad(c.expect, 7) + pad(actual, 7) + pad(ok ? 'ok' : 'FAIL', 5) +
+        pad(c.prompt, 49) + pad(top ? top.key.slice(0, 8) : '-', 10) +
+        pad(top ? top.score.toFixed(1) : '-', 7) +
+        (top ? top.hits.slice(0, 4).join(',') : '')
+    );
+  }
+
+  console.log('-'.repeat(104));
+  console.log(
+    'RECALL, THE BAR   ' + origHitStrict + '/' + origTotal +
+      '   original valid cases, target ranked FIRST (the bar is 3/' + origTotal + ')'
+  );
+  console.log(
+    '  lenient         ' + origHit + '/' + origTotal +
+      '   same cases, target anywhere in the shown hits'
+  );
+  console.log(
+    'recall, all valid ' + recallHitReal + '/' + recallTotalReal +
+      '   including cases added after the bar was set'
+  );
+  console.log(
+    'recall, raw       ' + recallHit + '/' + recallTotal + '   including cases marked broken'
+  );
+  console.log(
+    'precision         ' + silentOk + '/' + silentTotal + ' stayed silent' +
+      (silentOkNoSelf !== silentOk
+        ? '   (' + silentOkNoSelf + '/' + silentTotal + ' ignoring hits on each case own source session)'
+        : '')
+  );
+  console.log('threshold hits >= ' + HIT_MIN + ' AND score >= ' + SCORE_MIN);
+
+  if (near.length) {
+    console.log('\nmisses, and whether tuning could reach them:');
+    for (const n of near) {
+      if (n.weak) {
+        console.log('  "' + n.prompt + '"' + '\n' + '      target ' + n.want + ' IS shown but ' + n.weak +
+          ' -- lenient pass, strict fail.');
+      } else if (n.rank === null) {
+        console.log(
+          '  ' + (n.broken ? '[broken] ' : '') + '"' + n.prompt + '"\n' +
+            '      target ' + n.want + ' scored ZERO -- no shared vocabulary. ' +
+            'Not reachable by any threshold.'
+        );
+      } else {
+        console.log(
+          '  "' + n.prompt + '"\n' +
+            '      target ' + n.cand.key.slice(0, 8) + ' WAS found: rank ' + n.rank +
+            ', score ' + n.cand.score.toFixed(1) + ', hits [' + n.cand.hits.join(',') + ']' +
+            ' -- below the line. THIS is what tuning could reach.'
+        );
+      }
+    }
   }
 }
 
@@ -970,6 +1248,7 @@ else if (cmd === 'index')
 else if (cmd === 'match') cmdMatch(dirs, args[0], args[1]);
 else if (cmd === 'enrich') cmdEnrich(dirs, args[0]);
 else if (cmd === 'banners') cmdBanners(dirs);
+else if (cmd === 'eval') cmdEval(dirs, args[0]);
 else
   fail(
     'usage:\n' +
@@ -982,5 +1261,6 @@ else
       '\n  recall.mjs banners                                       # sessions carrying our own pointer text' +
       '\n  recall.mjs digest [<id>] [--stdin] [--force]              # write one summary card' +
       '\n  recall.mjs digest --backfill [n]                          # card every session lacking one' +
-      '\n  recall.mjs digest --upgrade                               # re-try only source: fallback cards'
+      '\n  recall.mjs digest --upgrade                               # re-try only source: fallback cards' +
+      '\n  recall.mjs eval <file.json>                              # score the matcher against a case file'
   );

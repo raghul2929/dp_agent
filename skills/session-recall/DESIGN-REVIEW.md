@@ -288,6 +288,111 @@ therefore eligible for aliases at all.
 
 ---
 
+---
+
+## 7b. Measurement, 2026-08-19 — card-based matching
+
+Everything in section 7 above was measured against the *word-frequency* representation and is kept
+for history. This section is the current state, measured with a reproducible harness rather than by
+hand:
+
+```
+node <skill>/recall.mjs eval <skill>/evals.json --dir <project>
+```
+
+No model call, no network: same code path the `UserPromptSubmit` hook runs. Any two numbers in this
+section are comparable because they came from that command.
+
+### The bar
+
+3 of the 4 original valid paraphrase cases, with precision held. A fifth original case
+(*"where do I add the compliance log screen"*) is marked `broken` and excluded from the
+denominator: no session in the corpus is about a compliance log screen, the nearest real work
+shares zero vocabulary with the prompt, and no lexical method can reach it. A case with no true
+answer is a broken test, not a failing one. A sixth case was added later and is reported
+separately — a case added after the bar was set cannot move the bar.
+
+### Result history
+
+| Stage | Bar (strict) | Precision | What changed |
+| --- | --- | --- | --- |
+| word-frequency baseline | 0/4 | 17/20 | starting point, cards not yet used |
+| card-based matching | 1/4 | 17/20 | summaries + topics replace word counts |
+| `SCORE_MIN` 6 -> 4 | 1/4 | 17/20 | the one threshold adjustment allowed |
+| + spelling normalisation | **1/4 strict, 2/4 lenient** | **17/20 (19/20 excl. self-match)** | `colour` reaches `color-palette` |
+
+**Strict counts a pass only when the target session RANKS FIRST.** Lenient counts it when the
+target appears anywhere in the shown hits. The difference is not cosmetic: a lenient pass can
+depend entirely on `MAX_HITS`, which would let a display setting decide the score. The
+colour/typography case is exactly that — the right session is found and shown, but a 9-turn
+states-of-matter artifact outranks a 154-turn design-system session, so it is recorded as a fail.
+
+**The bar was not reached.** 1/4 strict, 2/4 lenient, against a bar of 3/4.
+
+### Precision, and why it is reported twice
+
+20 silent cases, not 5. Fifteen were taken verbatim from real transcripts: every user turn of
+18-110 characters was collected (251 of them), every 4th was sampled, and selection was by
+category — current-state debugging, routine edits, git operations, one-off lookups — without
+running the matcher on any of them first. Prompts that would obviously match, such as *"how did we
+set up Playwright in this project?"*, were excluded because they SHOULD match.
+
+A prompt lifted from session X frequently matches X: X's card summarises the very conversation that
+prompt was part of. Live, the current session is excluded from its own results, so that hit could
+never fire. Precision is therefore reported both raw and ignoring hits on a case's own source
+session. At the shipped setting only one false alarm is not a self-match.
+
+### The most valuable finding: HIT_MIN = 1 reaches the bar and must not be used
+
+Both remaining bar misses find their target and are rejected for matching on a single term
+(`pdf` at 4.0; `agent` at 3.0 with plural handling). Relaxing `HIT_MIN` from 2 to 1 therefore
+reaches **3/4** — and collapses precision:
+
+| Setting | Bar | Precision (raw) | Precision (excl. self) |
+| --- | --- | --- | --- |
+| `HIT_MIN = 2` (shipped) | 1/4 strict, 2/4 lenient | 17/20 | 19/20 |
+| `HIT_MIN = 1` + spelling | 3/4 | **13/20** | **16/20** |
+
+Seven false alarms, fired by one ordinary word each: `border is not visble clearly` -> the design
+session on [border, borders]; `check i click the flask icon` -> an e2e session on [click];
+`dont mention loal pipe line flow in pr` -> an audit session on [mentions].
+
+This was invisible against a 5-prompt silent set, where `HIT_MIN = 1` looked like a free pass.
+**If you are tempted to relax the hit floor, this is the experiment that already ran.** Enlarge the
+silent set before trusting any relaxation, and do not treat a 5-case precision score as evidence.
+
+### What was tried and rejected
+
+| Change | Effect | Kept? |
+| --- | --- | --- |
+| splitting query tokens into parts | zero change in every variant | no |
+| plural normalisation | target reachable but still 1 hit; inflates a false alarm 5.0 -> 7.0 | no |
+| spelling normalisation (British/American) | converts the palette case, precision unchanged | **yes** |
+| `HIT_MIN` 2 -> 1 | 3/4 bar, precision 13/20 | no |
+
+Spelling normalisation only ever adds a variant the corpus already contains, so an unknown word
+cannot become a match by being rewritten.
+
+### One regression this project caused, recorded deliberately
+
+Section 7 reports 1/5 paraphrase recall using the alias layer. Bumping `CACHE_V` from 3 to 4 during
+the hook-hardening work invalidated every cache entry, and rebuilt entries start with
+`aliases: []` because `enrich` was never re-run. The alias layer silently vanished and the one
+paraphrase that used to match stopped matching, which is why the baseline here is 0/4 rather than
+1/4. It was not repaired, because cards replace that representation entirely — but a cache-version
+bump silently discarding a whole layer of enrichment is worth knowing about before bumping the
+next one.
+
+### Verdict
+
+Lexical matching over model-written cards moved paraphrase recall from unreachable to nearly
+reachable: baseline misses scored ZERO, whereas the remaining misses now rank first or second and
+fall short only at the threshold. It did not reach 3/4, and the single lever that does reach it
+costs a quarter of the system's silence. The next step is local embeddings over the same cards.
+Nothing else needs to change: cards, the digest pipeline, all three hooks, `--backfill`,
+`--upgrade` and this eval harness are all representation-agnostic; only `cardCandidates` computes
+similarity.
+
 ## 8. Known weaknesses — review these hardest
 
 1. **Cache write race.** `buildCache` reads the whole file, mutates, and writes it back. Two

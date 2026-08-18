@@ -1,0 +1,183 @@
+[
+  {
+    "_note": "BASELINE (2026-08-18, before card-based matching): recall 0/5, precision 4/5. Two things that number records. (1) The design packet measured 1/5 recall using the alias layer; bumping CACHE_V from 3 to 4 during the hook-hardening work invalidated every cache entry, and rebuilt entries start with aliases: [] because `enrich` was never re-run. So the alias layer silently vanished and the one paraphrase that used to match (playwright) stopped matching: 1/5 -> 0/5 is our own regression, not a measurement artefact. It is not being fixed, because cards replace that representation entirely. (2) The packet claimed 5/5 precision measured on 3 prompts; with 5 silent cases, 'write a commit message for these changes' matches session 49269330 at exactly the threshold (score 6.0, hits commit+changes). The defended precision floor is therefore 4/5, not 5/5."
+  },
+  {
+    "prompt": "add a null check to the invoice parser",
+    "expect": "silent",
+    "why": "ordinary forward-looking coding task, no prior session covers it"
+  },
+  {
+    "prompt": "what does this function do",
+    "expect": "silent",
+    "why": "question about current code, not about past work"
+  },
+  {
+    "prompt": "fix the ruff N818 error on guardrail exceptions",
+    "expect": "silent",
+    "why": "specific lint fix; 'fix' and 'error' are stoplisted precisely so this stays quiet"
+  },
+  {
+    "prompt": "write a commit message for these changes",
+    "expect": "silent",
+    "why": "routine request; 'commit' and 'changes' appear across many sessions"
+  },
+  {
+    "prompt": "what time is it in Tokyo",
+    "expect": "silent",
+    "why": "nothing to do with this project at all"
+  },
+  {
+    "prompt": "border is not visble clearly",
+    "expect": "silent",
+    "from": "3d53c1be",
+    "why": "UI bug report about current state (verbatim from session 3d53c1be)"
+  },
+  {
+    "prompt": "still it is not scroll and giveing agree why",
+    "expect": "silent",
+    "from": "4ac27334",
+    "why": "debugging the run in front of them (verbatim from session 4ac27334)"
+  },
+  {
+    "prompt": "it does not filled the required field",
+    "expect": "silent",
+    "from": "4ac27334",
+    "why": "debugging the run in front of them (verbatim from session 4ac27334)"
+  },
+  {
+    "prompt": "can we use different document instead of golden_sample.pdf",
+    "expect": "silent",
+    "from": "4ac27334",
+    "why": "routine change request -- deliberately risky, it names a pdf (verbatim from session 4ac27334)"
+  },
+  {
+    "prompt": "how to run this http://localhost:5173/ alreay i have running the whole system",
+    "expect": "silent",
+    "from": "4ac27334",
+    "why": "one-off how-do-I-run lookup (verbatim from session 4ac27334)"
+  },
+  {
+    "prompt": "can we do pull and accept what are thing we have to remove conflict then push",
+    "expect": "silent",
+    "from": "4ac27334",
+    "why": "git operation (verbatim from session 4ac27334)"
+  },
+  {
+    "prompt": "same check for edit flow",
+    "expect": "silent",
+    "from": "5416e4f7",
+    "why": "routine follow-up edit (verbatim from session 5416e4f7)"
+  },
+  {
+    "prompt": "can you list some better wordings for this dont change any thing just me list out",
+    "expect": "silent",
+    "from": "7a61a9a3",
+    "why": "wording request, no prior work implied (verbatim from session 7a61a9a3)"
+  },
+  {
+    "prompt": "bold wording are not commig in draft",
+    "expect": "silent",
+    "from": "7a61a9a3",
+    "why": "formatting bug in current output (verbatim from session 7a61a9a3)"
+  },
+  {
+    "prompt": "add grey border for switch and sign out button",
+    "expect": "silent",
+    "from": "97cc7b22",
+    "why": "routine UI edit -- deliberately risky, the design session is in the corpus (verbatim from session 97cc7b22)"
+  },
+  {
+    "prompt": "check i click the flask icon next what i need to do",
+    "expect": "silent",
+    "from": "c320bec3",
+    "why": "asking what to do next in the tool in front of them (verbatim from session c320bec3)"
+  },
+  {
+    "prompt": "still same thing happens",
+    "expect": "silent",
+    "from": "c320bec3",
+    "why": "bare debugging continuation (verbatim from session c320bec3)"
+  },
+  {
+    "prompt": "which comand ineed to run",
+    "expect": "silent",
+    "from": "1055a25b",
+    "why": "one-off command lookup (verbatim from session 1055a25b)"
+  },
+  {
+    "prompt": "whose side issue in it like our side or lovable side",
+    "expect": "silent",
+    "from": "54b37eed",
+    "why": "triage question about a live problem (verbatim from session 54b37eed)"
+  },
+  {
+    "prompt": "dont mention loal pipe line flow in pr",
+    "expect": "silent",
+    "from": "c3650467",
+    "why": "instruction about the current draft (verbatim from session c3650467)"
+  },
+  {
+    "prompt": "how do we pass a date range through the url to a screen",
+    "expect": "match",
+    "session": "1aedc9fe",
+    "accept": [
+      "1aedc9fe"
+    ],
+    "why": "1aedc9fe (39t, 'Add deeplink to model usage screen in Lovable') is URL/deeplink work -- a different area from the Playwright sessions that two other cases resolve to, so a pass here cannot come from one lucky session. Its card carries 'date-range', 'url-driven' and 'query-params' as topics and names the ts_from/ts_to range in the summary, while its TITLE shares nothing with the prompt: the match must come from the card body, and specifically from splitting hyphenated topic phrases into parts. Word-frequency topics never contained these terms, so before/after is a real signal."
+  },
+  {
+    "prompt": "how do I automate browser tests end to end here",
+    "expect": "match",
+    "session": "4ac27334",
+    "accept": [
+      "4ac27334",
+      "c320bec3"
+    ],
+    "why": "4ac27334 (406t) set up the Playwright structure; c320bec3 (210t) is the same work earlier. Paraphrase gap: the sessions say 'playwright' and 'e2e', the prompt says 'browser' and 'end to end'.",
+    "original": true
+  },
+  {
+    "prompt": "I want to update the colour palette and typography",
+    "expect": "match",
+    "session": "97cc7b22",
+    "accept": [
+      "97cc7b22",
+      "42406c25"
+    ],
+    "why": "97cc7b22 (154t) is the design-system session, 10 hits on 'palette'. 42406c25 (7t) is the redesign PR draft, 3 hits on 'typography'. Note the spelling gap: the card stores 'color-palette', the prompt says 'colour'.",
+    "original": true
+  },
+  {
+    "prompt": "where do I add the compliance log screen",
+    "expect": "match",
+    "session": "1c216e6b",
+    "accept": [
+      "1c216e6b"
+    ],
+    "broken": true,
+    "why": "NO TRUE ANSWER. No session is about a compliance log screen. 1c216e6b (178t, 'Design audit catalog dashboard UI') is the nearest real work, but the two share ZERO vocabulary: compliance/log/screen vs audit/catalog/dashboard. 'compliance' appears in 0 of 37 cards and only incidentally in 5 transcripts. No lexical method can pass this case; only embeddings could. Kept in the file so the gap stays visible -- excluded from the honest denominator.",
+    "original": true
+  },
+  {
+    "prompt": "how are the sub-agents wired together in this repo",
+    "expect": "match",
+    "session": "5e7717f0",
+    "accept": [
+      "5e7717f0"
+    ],
+    "why": "5e7717f0 (85t) is the architecture/routing session, 10 hits on 'subagent'. Card topics say 'agent-routing' and 'skill-routing'; the prompt says 'sub-agents' and 'wired'.",
+    "original": true
+  },
+  {
+    "prompt": "the pdf keeps regenerating over and over",
+    "expect": "match",
+    "session": "c320bec3",
+    "accept": [
+      "c320bec3",
+      "4ac27334"
+    ],
+    "why": "c320bec3's card names the cause outright -- report generation running in the background while the popup closes. 4ac27334 carries the most 'pdf' hits (67) and all 10 'regenerat' hits. NOTE: the design packet attributed this case to 23ddcfec (83t), but that session does not appear in a search for 'pdf' or 'regenerat' at all; that attribution was wrong.",
+    "original": true
+  }
+]
