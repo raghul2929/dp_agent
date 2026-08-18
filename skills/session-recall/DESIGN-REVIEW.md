@@ -487,6 +487,16 @@ So the ceiling is not "61% of sessions are invisible". It is:
 
 ## 7d. Corpus cleanup, 2026-08-19 — the baseline 4a/4b/4c are measured against
 
+> **Distribution status, 2026-08-19 — none of this has shipped.** `origin/main` is at `d920acd`
+> (cards, v0.7.1). Everything from the strip onward exists on this machine only: 5 unpushed
+> commits, the rollback tag `cards-v0.7.1`, and the whole measured record in 7d, 7e and 7f.
+> Nothing has been pushed. The dp-agent plugin installed on this machine is still **0.4.1**,
+> whose `skills/` directory contains no session-recall at all — the same gap 7c records for the
+> cards. **The measured benefit has never been delivered to any installed plugin, and no result
+> in sections 7b through 7f has ever run for anyone as an installed plugin.** Every number in
+> them was produced by a loose copy in one project.
+
+
 Everything in 7b and 7c was measured against a corpus that was 44% machine exhaust. Those 44
 transcripts were not sessions anyone had:
 
