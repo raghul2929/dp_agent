@@ -54,6 +54,25 @@ function fail(msg) {
   process.exit(0);
 }
 
+// Text the harness puts in the user's mouth: slash-command plumbing, task notifications, IDE
+// state, injected reminders. It is addressed to the model, not typed by anyone, and it is not
+// what a session was about -- `ide_opened_file` reaching the top-20 corpus terms is what happens
+// when it is indexed as if it were. Anchored at the start, so a turn that merely quotes one of
+// these tags in prose is still the user talking.
+const ENVELOPE_TAGS =
+  'command-name|command-message|command-args|local-command-[a-z]+|task-notification|' +
+  'system-reminder|ide_opened_file|ide_selection';
+const ENVELOPE = new RegExp(
+  '<(' + ENVELOPE_TAGS + ')>[^]*?</\\1>|<(?:' + ENVELOPE_TAGS + ')>',
+  'g'
+);
+const CAVEAT = /^Caveat: The messages below.*/;
+
+// Envelopes are STRIPPED, not used to drop the turn: the IDE prepends <ide_opened_file> to what
+// the user actually typed, so discarding the turn discards the question with it. 18dad7ee -- a
+// 17-turn debugging session and an eval target -- stores nothing at all under a drop-the-turn rule.
+const unwrap = (t) => t.replace(ENVELOPE, ' ').replace(CAVEAT, ' ').replace(/\s+/g, ' ').trim();
+
 // Parse one transcript into { title, mtime, turns:[{role,text}] }
 function parseSession(file) {
   let title = null;
@@ -77,14 +96,25 @@ function parseSession(file) {
       continue;
     }
     if (o.type !== 'user' && o.type !== 'assistant') continue;
+    // message.content is a plain string on some turns and an array of blocks on others. Reading
+    // arrays only silently dropped every string-shaped turn -- and in this corpus 45 of those 46
+    // turns are machine envelopes, so the array-only read was accidentally acting as a filter.
+    // Both shapes are read now, and the filtering is done deliberately below instead.
     const content = o.message?.content;
-    if (!Array.isArray(content)) continue;
-    const text = content
-      .filter((b) => b?.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    let text;
+    if (typeof content === 'string') {
+      text = content.replace(/\s+/g, ' ').trim();
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    } else {
+      continue;
+    }
+    if (o.type === 'user') text = unwrap(text);
     if (text) turns.push({ role: o.type, text, ts: o.timestamp });
   }
   return { file, title, mtime: fs.statSync(file).mtime, turns };
@@ -240,7 +270,17 @@ last first still even much many one two three because while after before during`
 // actual subject than an ordinary English word, so they clear the threshold on one hit.
 const IDENTISH = /[a-z][A-Z]|_|[./-]|^[A-Z]{2,}$/;
 
+// A short session repeats nothing, so a >=2 rule stores nothing for it and leaves it hanging on
+// its auto-generated title alone. Under 4 turns there is not enough text for a repeat to mean
+// anything anyway, so one mention is the best evidence available and is taken as the topic.
+const SHORT_TURNS = 4;
+
 function keywordsFor(turns, n = 6) {
+  // Counted over the turns keywordsFor actually reads -- the user's own, minus interrupt markers
+  // and our own pointer text. A transcript's raw length includes assistant prose and interrupts,
+  // which is not what "short" means here.
+  const asked = turns.filter((t) => t.role === 'user' && !INTERRUPT.test(t.text) && !isOurs(t)).length;
+  const minCount = asked < SHORT_TURNS ? 1 : 2;
   const counts = new Map();
   const casing = new Map();
   for (const t of turns) {
@@ -258,7 +298,7 @@ function keywordsFor(turns, n = 6) {
     }
   }
   return [...counts.entries()]
-    .filter(([, c]) => c >= 2)
+    .filter(([, c]) => c >= minCount)
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
     .map(([k]) => casing.get(k));
@@ -323,7 +363,14 @@ const CACHE = '.recall-topics.json';
 // v5: the aliases field is gone with the model call that filled it. Entries are otherwise
 // unchanged, but a stale v4 entry still carries a dead `aliases` key, so every entry is
 // rebuilt once. One ~0.8s reparse across the corpus.
-const CACHE_V = 5; // bump to invalidate every cached entry after a shape change
+const CACHE_V = 7; // bump to invalidate every cached entry after a shape change
+
+// Sessions that store no topics at all, measured 2026-08-19 on 59 sessions after 4c-b + 5-c.
+// Zero is not an aspiration, it is the observed floor: every session in the corpus stores
+// something. Doctor FAILS if it rises, because the only ways it can rise are a parser that
+// stopped reading a transcript shape or a keyword rule that got stricter -- both silent, and
+// both survivable by a green eval. Raise this ONLY with a measured reason written beside it.
+const EMPTY_BASELINE = 0;
 
 // How many stored topics per session. This one number is the whole representation: too few and
 // a session is unreachable by anything but its headline words, too many and every session
@@ -476,10 +523,10 @@ function buildMatcher(dirs) {
   const index = {};
   const df = new Map();
   for (const [key, entry] of Object.entries(store)) {
-    index[key.replace(/\.jsonl$/, '')] = { e: entry, terms: indexEntry(entry) };
-    for (const t of new Set((entry.topics || []).map((x) => String(x).toLowerCase()))) {
-      df.set(t, (df.get(t) || 0) + 1);
-    }
+    const terms = indexEntry(entry);
+    index[key.replace(/\.jsonl$/, '')] = { e: entry, terms };
+    // 4d EXPERIMENT: title terms folded into df.
+    for (const t of terms.keys()) df.set(t, (df.get(t) || 0) + 1);
   }
   return { store, index, df, size: Object.keys(index).length };
 }
@@ -833,6 +880,19 @@ function cmdDoctor(dirs, projectDir) {
   // everywhere else -- so it is reported, not assumed.
   const m = buildMatcher(dirs);
   ok('topic cache built', m.size > 0, m.size + ' session(s), ' + m.df.size + ' indexed terms');
+
+  // The 5-b regression, made visible. A parser change that dropped IDE-prefixed turns emptied
+  // 18dad7ee -- 17 turns, an eval target -- of every topic, and the eval still came back green
+  // because the session's title carried its cases on its own. Nothing in the harness noticed;
+  // a human did. A session storing nothing is not a scoring question, so it cannot be left to
+  // the scoring harness: it is checked here, against a recorded floor.
+  const empty = Object.values(m.index).filter((x) => !(x.e.topics || []).length).length;
+  ok(
+    'sessions storing topics',
+    empty <= EMPTY_BASELINE,
+    empty + ' of ' + m.size + ' store nothing (baseline ' + EMPTY_BASELINE + ')' +
+      (empty > EMPTY_BASELINE ? ' -- REGRESSION: something stopped reading transcript text' : '')
+  );
 
   const payload = JSON.stringify({
     session_id: path.basename(transcripts[0]).replace(/\.jsonl$/, ''),

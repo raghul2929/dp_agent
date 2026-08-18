@@ -13,9 +13,7 @@
   "why": "question about current code, not about past work"
  },
  {
-  "prompt": "fix the ruff N818 error on guardrail exceptions",
-  "expect": "silent",
-  "why": "specific lint fix; 'fix' and 'error' are stoplisted precisely so this stays quiet"
+  "_note": "RETIRED at 4c (2026-08-19): the silent case \"fix the ruff N818 error on guardrail exceptions\". It expected silence on a prompt one word apart from an easy case (\"fix the ruff N818 lint error on guardrail exceptions\") that expects a match on ccda60ba. The same question cannot have opposite expectations. Its rationale -- 'fix' and 'error' are stoplisted precisely so this stays quiet -- only ever held because ccda60ba stored ZERO topics: ruff, N818, guardrail and exceptions were absent from the corpus, so silence was produced by the storage defect 4c fixes, not by the prompt genuinely having no prior work behind it. Once short sessions store single-mention terms, ccda60ba is reachable and both prompts find it -- correct behaviour that this case scored as a precision failure. Retired rather than reworded, because any silent case built on this prompt is now unsound: the session it names exists, is about exactly this, and is asked for verbatim by its twin. The silent set is 19 cases from here; do not compare a precision x/20 against it."
  },
  {
   "prompt": "write a commit message for these changes",

@@ -429,7 +429,7 @@ Not because they failed on their own terms. Because of what they cost against wh
 Cards bought **one** paraphrase case, strict, and cost two points of precision. That is the whole
 trade. Anyone proposing to rebuild them needs a better answer than "it should help".
 
-### The easy baseline, 2026-08-19 — what actually limits recall
+### The easy baseline, 2026-08-19 — what actually limits recall  *(dirty corpus — superseded as a baseline by 7d)*
 
 The paraphrase cases were the wrong first target. Before asking the scorer to bridge vocabulary
 gaps, ask whether the session is stored richly enough to be found by its *own* words. 15 cases were
@@ -441,6 +441,10 @@ EASY SET          10/15   target session own words, ranked FIRST
   lenient         12/15   target anywhere in the shown hits
 precision         19/20   unchanged
 ```
+
+**These numbers were measured on the pre-cleanup corpus of 100 cached sessions, 44 of which were
+the recall system's own exhaust.** They are kept here because the analysis below is built on them,
+but they are *not* the baseline for any later work. See 7d.
 
 ### The stored-representation distribution — the real ceiling
 
@@ -478,6 +482,271 @@ So the ceiling is not "61% of sessions are invisible". It is:
    and shown but outranked by a session with a fuller topic set (`3d53c1be` lost to `5416e4f7`;
    `3d571d19` ranked 9th behind `f20f2e71`). Those are threshold and weighting problems, reachable
    by tuning.
+
+---
+
+## 7d. Corpus cleanup, 2026-08-19 — the baseline 4a/4b/4c are measured against
+
+Everything in 7b and 7c was measured against a corpus that was 44% machine exhaust. Those 44
+transcripts were not sessions anyone had:
+
+| kind | n | what it was |
+|---|---|---|
+| `RECALL-LEDGER-SUMMARIZER-V1` runs | 37 | the archive summarizer's own invocations, saved as transcripts |
+| `Reply with exactly the word: PONG` | 5 | health probes |
+| empty `/cmd` stubs | 2 | 2 KB, no conversation |
+
+Moved to `D:\work_space\_recall-trash-2026-08-19\` — deliberately **outside**
+`~/.claude/projects/`, because `sessions()` reads that directory and a dot-folder inside it would
+still be a candidate for re-reading. `.recall-topics.json` was deleted and rebuilt from scratch.
+
+Human sessions were left alone, including the 15 one-shot questions that store nothing
+(`ccda60ba` "fix the ruff N818 lint error", `536ac9bf` "why is the deeplink route using a path
+param", `5b4c5352` "how do I get the login flow working in the tests"). Those are real questions
+and exactly what recall is for; that they are unfindable is the failure being measured, not a
+reason to delete the evidence.
+
+### Before / after
+
+| | dirty (100 cached) | clean (59 cached) |
+|---|---|---|
+| files on disk | 103 | 59 |
+| cached sessions | 100 | 59 |
+| indexed terms (df, topics only) | 282 | **282 — unchanged** |
+| topics/session: 0 | 60 | 19 |
+| 1-2 | 3 | 3 |
+| 3-5 | 4 | 4 |
+| 6-10 | 3 | 3 |
+| 11-14 | 30 | 30 |
+| EASY, strict | 10/15 | **11/15** |
+| EASY, lenient | 12/15 | 12/15 |
+| paraphrase bar, strict | 0/4 | 0/4 |
+| precision | 19/20 | 19/20 |
+
+Top-20 terms by session count are **byte-identical before and after**: `zaap-app` 11, `work_space`
+10, `user` 8, `git` 7, `name` 7, `skill` 7, `session` 6, `branch` 5,
+`claude/skills/session-recall/recall.mjs` 5, `recall.mjs` 5, then `claude`, `design`, `dp-agent`,
+`e2e`, `every`, `flow`, `ide_opened_file`, `keyword`, `node`, `page` at 4.
+
+### The correction: they were not flattening rarity
+
+The stated reason for cutting them was that 37 near-duplicate sessions were diluting the df scale.
+That was wrong, and the measurement says so: every one of the 44 stored **zero** topics, so not one
+of them ever entered `df`. `df` is built over stored topics only — titles are deliberately excluded
+(see the comment above `buildMatcher`). The rarity scale never saw them.
+
+What they actually did is worse and narrower. `indexEntry` weights **title** terms at `W_TITLE = 2`
+while `df` ignores titles entirely. A summarizer session inherits its subject's real title — "Fix
+e2e test register modal hang", "Add model usage deep-link destination" — so it carried full
+double-weighted title vocabulary into scoring while contributing nothing to the rarity denominator
+that vocabulary is weighed against. They were not noise in the scale; they were **untaxed
+competitors at the top of the ranking**, and they were winning:
+
+- `for one cell can we place 3 different urls` → was won by `bd393c7f` (summarizer, 12.0); now
+  resolves to the real session `4b5424cf` (10.0). **This is the single strict point gained.**
+- `how do we pass a date range through the url` → was won by `83058b1b` (summarizer, 8.0); the real
+  target `1aedc9fe` now ranks **first** at 4.0 — still under `SCORE_MIN`, but now the top hit.
+  Reachable by tuning; previously not, because a summarizer sat above it.
+- `msal login keeps failing in the e2e run` → was a *false* match on `05fb8cfa` (summarizer, 11.0);
+  now correctly silent. The strict score does not move (it was already FAIL), but a confident wrong
+  answer became an honest miss.
+- `how do I get the login flow working in the tests` → same story, `05fb8cfa` displaced.
+
+So the cleanup bought one strict point and removed three fake top-hits. The zero-topic bucket
+dropping 60 → 19 is the honest measure of what was removed: 41 of the 60 "stores nothing" sessions
+were never sessions at all, which means the "61% of sessions are invisible" figure in 7c was
+inflated by machine noise. On the clean corpus it is **19 of 59, 32%**.
+
+### The baseline
+
+Any claim made by 4a, 4b or 4c is measured against **this**, on 59 sessions:
+
+```
+EASY SET          11/15   strict, target ranked FIRST
+  lenient         12/15
+paraphrase bar     0/4    strict and lenient
+precision         19/20
+indexed terms     282     over 59 sessions
+```
+
+Do not compare a post-4c number against the 10/15 in 7c. That figure belongs to a different corpus.
+
+---
+
+## 7e. 4d and 4c-b, 2026-08-19 — the current baseline
+
+Two changes, measured one at a time against 7d, each kept on its own result.
+
+| | 7d baseline | +4d | +4c-b |
+|---|---|---|---|
+| EASY, strict | 11/15 | 11/15 | **12/15** |
+| EASY, lenient | 12/15 | 12/15 | **13/15** |
+| paraphrase bar | 0/4 | 0/4 | 0/4 |
+| precision | 19/20 | **20/20** | 19/19 † |
+| sessions storing nothing | 19 | 19 | **0** |
+| df terms (topics) | 282 | 282 | 354 |
+
+† The silent set is 19 cases from 4c onward, not 20 — see "The retired case" below.
+
+### 4d — title terms folded into df
+
+`W_TITLE = 2` unchanged; `buildMatcher` now counts title terms in `df` as well as topics, via
+`indexEntry`'s own key space. Before this, a title term was double-weighted *and* had `df = 0`,
+which `applyRarity` scores at the maximum 2x — roughly 4x total, with no corpus evidence behind it.
+That asymmetry is what let the summarizer sessions of 7d outrank real work.
+
+It bought exactly one case, and it is the case 7b named as the precision floor:
+`write a commit message for these changes` was matching `49269330` at exactly `SCORE_MIN` (6.0, on
+`commit,changes` — both title terms). With titles in `df` those terms lose their rarity bonus, the
+score falls to 4.0, and the match correctly goes silent. **Precision 19/20 -> 20/20; the floor 7b
+defended at 4/5 is no longer a floor.**
+
+No ranking case moved. The asymmetry inflated every session's title terms about equally, so it
+decided ties — which is how a summarizer with a borrowed title beat a real session — but it was not
+what put real targets over or under the line.
+
+### 4c-b — single-mention topics for short sessions
+
+`keywordsFor` requires a term to appear twice. A short session repeats nothing, so it stored
+nothing and hung entirely on its auto-generated title (7c, group 2). Under `SHORT_TURNS = 4` the
+threshold drops to one mention.
+
+The gate counts **the turns `keywordsFor` actually reads** — user role, minus interrupt markers and
+our own pointer text — not raw transcript length. The first attempt gated on `turns.length`, which
+includes assistant prose and interrupts: `ccda60ba` (2 turns) qualified, but `91efb6b3` ("msal login
+keeps failing in the e2e run", 2 real questions, 4 raw turns) did not and stayed empty. Both
+readings scored 12/15 strict and 13/15 lenient; the user-turn gate is kept because it takes
+sessions storing nothing from 19 to **0** rather than to 7.
+
+Composition shifted underneath the same total. `msal login keeps failing in the e2e run` now
+passes. `how do I get an audit catalog event by event id` dropped out — `1c216e6b` still ranks
+first, but at 5.0 instead of 8.0, because `audit` and `catalog` are now stored by more sessions and
+lost rarity. That is a below-threshold near-miss of the same class as the date-range case, reachable
+by tuning, not a retrieval failure.
+
+Storing more per session is not free: it raises `df` and therefore lowers the rarity multiplier for
+every term it touches. The audit-catalog case is that cost showing up. Watch for it when adding to
+what is stored.
+
+### The retired case, and why it is not a precision regression
+
+4c appeared to cost a precision point:
+
+```
+silent  match  FAIL  fix the ruff N818 error on guardrail exceptions -> ccda60ba 8.0
+```
+
+`evals.json` held two prompts one word apart with opposite expectations — this one expecting
+silence, and an `easy` case ("fix the ruff N818 **lint** error on guardrail exceptions") expecting a
+match on `ccda60ba`. The silent case's stated rationale was that `fix` and `error` are stoplisted;
+what actually produced the silence was `ccda60ba` storing **zero topics**, so `ruff`, `N818`,
+`guardrail` and `exceptions` were nowhere in the corpus. Its expectation was only ever satisfied by
+the defect 4c fixes.
+
+It was **retired, not reworded** — the session it names exists, is about exactly this, and is asked
+for verbatim by its twin, so any silent case built on this prompt is unsound. A `_note` in its place
+in `evals.json` records the reasoning. **The silent set is 19 cases from here. Do not compare a
+post-4c precision x/19 against the x/20 figures in 7b, 7c or 7d.**
+
+### The baseline
+
+```
+EASY SET          12/15   strict, target ranked FIRST
+  lenient         13/15
+paraphrase bar     0/4    strict and lenient
+precision         19/19   on 19 silent cases
+sessions storing nothing   0 of 59
+```
+
+Measurement noise, worth knowing: the live session's own transcript grows during a run, so its
+cache entry is recomputed and the indexed-term total moves by a term or two between otherwise
+identical runs. Ranking and pass counts are stable; do not read significance into +/-1 on term
+counts.
+
+---
+
+## 7f. Step 5, 2026-08-19 — the parser, and three retractions
+
+Kept, score-neutral, on correctness grounds. The standing rule was adjusted to allow this: *revert
+what does not improve the numbers* governs **scoring** changes. A correctness fix that moves no
+number still ships, because the failure it prevents is silent and no harness reports it.
+
+### Retraction 1 — there was no data loss
+
+`parseSession` read `message.content` only when it was an array, and 46 user turns across 16 of 59
+sessions store it as a plain string. That was reported as data loss. It was not:
+
+| what the 46 string turns actually are | n |
+|---|---|
+| machine envelopes — `<command-name>`, `<local-command-caveat>`, `<task-notification>` | 45 |
+| the `RECALL-LEDGER-SUMMARIZER` prompt in `5ff4f298` | 1 |
+| **turns a human typed** | **0** |
+
+Not one turn of human prose was being lost. The array-only read was **accidentally acting as an
+envelope filter** — doing something useful for a reason nobody chose. The bug was real; the
+consequence claimed for it was not. It was also the same gap that made the first pass of the 7d
+corpus audit undercount every session, which is how it was found.
+
+Every command shares this parser — `cmdList`, `cmdSearch`, `cmdShow` (serving both `show` and
+`outline`), `cmdIndex` and `buildCache` — so the omission was never scoring-only. It applied
+equally to reading by hand. Given what the dropped turns contained, nothing worth reading was
+hidden.
+
+### Retraction 2 — a green eval hid a session losing everything
+
+Three fixes were measured. All four rows score identically:
+
+| | EASY strict | lenient | paraphrase | precision | df terms | storing nothing |
+|---|---|---|---|---|---|---|
+| 4c-b (7e baseline) | 12/15 | 13/15 | 0/4 | 19/19 | 354 | 0 |
+| 5-a naive both-shapes | 12/15 | 13/15 | 0/4 | 19/19 | 350 | 0 |
+| 5-b drop envelope turns | 12/15 | 13/15 | 0/4 | 19/19 | 342 | **2** |
+| 5-c strip envelopes | 12/15 | 13/15 | 0/4 | 19/19 | 362 | 0 |
+
+5-a feeds all 45 envelopes into topics — strictly more junk, no gain. 5-b dropped any user turn
+beginning with an envelope tag, which is wrong because the IDE **prefixes** `<ide_opened_file>` to
+what the user actually typed: dropping the turn drops the question with it. It emptied `18dad7ee`
+— a 17-turn debugging session and an eval target — of every stored topic.
+
+**The eval stayed green anyway.** `18dad7ee` kept passing its cases on its auto-generated title
+alone, exactly the title-only fragility 7c described in group 2. A session lost 100% of its stored
+representation and every number in the harness held still. That is the finding: **the eval measures
+whether answers come out right, not whether the corpus is intact**, and those come apart quietly.
+A human noticed. See the doctor check below, so nobody has to notice it twice.
+
+### Retraction 3 — kept anyway, and why
+
+5-c reads both shapes, strips envelope blocks, keeps the prose, and drops a turn only when nothing
+survives. It buys **zero** measured points. It ships because:
+
+- The parser is now correct **by construction** rather than by accident. Today the array-only read
+  happens to exclude only machine text. The day Claude Code writes an ordinary prompt as a string,
+  recall goes blind to it and nothing in `doctor`, the eval, or the hooks would say so.
+- `ide_opened_file` was a **top-20 corpus term at df 4** — harness plumbing indexed as if it were
+  a subject, diluting the rarity of everything near it. It is now absent from topics entirely.
+- 5 of 59 sessions changed stored topics. All five sat at the `TOPICS_N` cap and swapped envelope
+  tokens for real ones — the cap was being spent on plumbing.
+
+### The doctor check this produced
+
+```
+  ok   sessions storing topics  -- 0 of 59 store nothing (baseline 0)
+```
+
+`EMPTY_BASELINE = 0`, and `doctor` FAILS if the count rises. Zero is not an aspiration; it is the
+observed floor after 4c-b + 5-c. The only ways it can rise are a parser that stopped reading a
+transcript shape, or a keyword rule that got stricter — both silent, both survivable by a green
+eval, and both exactly what happened in 5-b. Raise the constant only with a measured reason written
+next to it.
+
+### Baseline unchanged from 7e
+
+```
+EASY SET          12/15   strict     lenient 13/15
+paraphrase bar     0/4
+precision         19/19   on 19 silent cases
+sessions storing nothing   0 of 59   -- now enforced by doctor
+```
 
 ---
 
