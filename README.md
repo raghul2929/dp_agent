@@ -50,6 +50,7 @@ below — this is the copy-paste version.
    | `/dp-agent:dp-git-help` | Explains your git state (behind/diverged/conflicted) in plain language — never resolves conflicts for you. |
    | `/dp-agent:dp-version` | Confirms which plugin version is installed — use this after any update. |
    | `/dp-agent:dp-review` | For reviewers: checks a teammate's PR only touches what its ticket asked for, then offers to hand off to `/code-review` for correctness/quality. Entry point is a PR number, not a ticket. |
+   | `/dp-agent:dp-recall` | Searches your past Claude Code sessions for this project, so work already researched or decided isn't redone from scratch. |
 
    See "The skills" further below for full detail on each, and "Chained flow" for how
    they link together into one guided pass.
@@ -184,6 +185,7 @@ the real autocomplete (not just `/dp-ticket` etc., despite the directory names).
 | `/dp-agent:dp-git-help` | Explains branch state vs. the remote in plain language (no git jargon). Up to date → confirms it's safe to push. Uncommitted changes → offers to commit with whatever `/dp-cpr` already drafted, or points to `/dp-cpr` if nothing's drafted yet. Behind → explains why and gives the exact pull/rebase command (checks `CLAUDE.md` for a stated preference first). Conflicted → names the conflicting files and explains each one, then **stops** — it never resolves a conflict; that's always the developer's call. |
 | `/dp-agent:dp-version` | Prints the installed plugin version — one line, nothing else. Use this to confirm an update actually landed instead of trusting that the update command succeeded. |
 | `/dp-agent:dp-review` | For a senior reviewer with only high-level project knowledge, checks whether a PR's diff (`gh pr view`/`gh pr diff`) stays within the scope of its originating ticket, using `templates/scope-review.md`. Classifies every changed file in-scope/questionable/out-of-scope with reasoning, and flags anything that's also high blast-radius per `templates/plan-format.md`'s categories. Not a correctness/quality review — offers to hand off to the separate `code-review` skill for that via the `Skill` tool, and only posts its summary as a PR comment on explicit confirmation. Input is a PR number/URL via `gh`, not a ticket — this is the reviewer's tool, not part of the author-side chain below. |
+| `/dp-agent:dp-recall` | Searches the local `.jsonl` transcripts of your past Claude Code sessions for the current project (`~/.claude/projects/<slug>/`) and reads them back — `list`, `search`, `outline`, `show`. Surfaces what was already tried, decided, or rejected, which the code itself cannot tell you. Reads only conversation text; `tool_use`/`tool_result` blocks are skipped, so file dumps and pasted secrets are never returned. Entirely local — nothing is uploaded and one developer's transcripts are never visible to another. |
 
 Each skill's frontmatter `description` is what drives auto-invocation — Claude may pick
 one of these up on its own if the request matches (e.g. pasting a ticket). You can also
