@@ -8,7 +8,7 @@
     {
       "name": "dp-agent",
       "source": ".",
-      "description": "Standardises the path from a Jira ticket to a draft merge request: ticket quality check, implementation plan, commit/PR drafting, git-state explanation, PR scope check, and a full pre-merge review gate for correctness, security, gaps and quality."
+      "description": "Standardises the path from a Jira ticket to a draft merge request: ticket quality check, implementation plan, commit/PR drafting, git-state explanation, PR scope check, a full pre-merge review gate for correctness, security, gaps and quality, and a resumable fix loop that works through its findings."
     }
   ]
 }
