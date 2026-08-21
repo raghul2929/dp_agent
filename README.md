@@ -49,7 +49,8 @@ below — this is the copy-paste version.
    | `/dp-agent:dp-cpr` | Drafts your commit message and PR description from the diff, once work is done. |
    | `/dp-agent:dp-git-help` | Explains your git state (behind/diverged/conflicted) in plain language — never resolves conflicts for you. |
    | `/dp-agent:dp-version` | Confirms which plugin version is installed — use this after any update. |
-   | `/dp-agent:dp-review` | For reviewers: checks a teammate's PR only touches what its ticket asked for, then offers to hand off to `/code-review` for correctness/quality. Entry point is a PR number, not a ticket. |
+   | `/dp-agent:dp-review` | For reviewers: checks a teammate's PR only touches what its ticket asked for, then offers to hand off to `/dp-agent:dp-module-review` for correctness/quality. Entry point is a PR number, not a ticket. |
+   | `/dp-agent:dp-module-review` | The pre-merge review gate: picks a module and layer, then reviews it for correctness, security, gaps, quality and tests, and writes a ranked report with a ship / don't-ship verdict. |
    | `/dp-agent:dp-recall` | Searches your past Claude Code sessions for this project, so work already researched or decided isn't redone from scratch. |
 
    See "The skills" further below for full detail on each, and "Chained flow" for how
@@ -184,8 +185,9 @@ the real autocomplete (not just `/dp-ticket` etc., despite the directory names).
 | `/dp-agent:dp-cpr` | Reads the working diff and drafts a commit message (`templates/commit-message.md`) and PR description (`templates/pr-description.md`), links the originating ticket, and summarises test changes. Appends the `DP-Agent: v1` commit trailer so adoption can be tracked with `git log --grep`. Only drafts — it will not `git commit`/`push` without explicit confirmation. |
 | `/dp-agent:dp-git-help` | Explains branch state vs. the remote in plain language (no git jargon). Up to date → confirms it's safe to push. Uncommitted changes → offers to commit with whatever `/dp-cpr` already drafted, or points to `/dp-cpr` if nothing's drafted yet. Behind → explains why and gives the exact pull/rebase command (checks `CLAUDE.md` for a stated preference first). Conflicted → names the conflicting files and explains each one, then **stops** — it never resolves a conflict; that's always the developer's call. |
 | `/dp-agent:dp-version` | Prints the installed plugin version — one line, nothing else. Use this to confirm an update actually landed instead of trusting that the update command succeeded. |
-| `/dp-agent:dp-review` | For a senior reviewer with only high-level project knowledge, checks whether a PR's diff (`gh pr view`/`gh pr diff`) stays within the scope of its originating ticket, using `templates/scope-review.md`. Classifies every changed file in-scope/questionable/out-of-scope with reasoning, and flags anything that's also high blast-radius per `templates/plan-format.md`'s categories. Not a correctness/quality review — offers to hand off to the separate `code-review` skill for that via the `Skill` tool, and only posts its summary as a PR comment on explicit confirmation. Input is a PR number/URL via `gh`, not a ticket — this is the reviewer's tool, not part of the author-side chain below. |
+| `/dp-agent:dp-review` | For a senior reviewer with only high-level project knowledge, checks whether a PR's diff (`gh pr view`/`gh pr diff`) stays within the scope of its originating ticket, using `templates/scope-review.md`. Classifies every changed file in-scope/questionable/out-of-scope with reasoning, and flags anything that's also high blast-radius per `templates/plan-format.md`'s categories. Not a correctness/quality review — offers to hand off to `/dp-agent:dp-module-review` for that via the `Skill` tool, and only posts its summary as a PR comment on explicit confirmation. Input is a PR number/URL via `gh`, not a ticket — this is the reviewer's tool, not part of the author-side chain below. |
 | `/dp-agent:dp-recall` | Searches the local `.jsonl` transcripts of your past Claude Code sessions for the current project (`~/.claude/projects/<slug>/`) and reads them back — `list`, `search`, `outline`, `show`. Surfaces what was already tried, decided, or rejected, which the code itself cannot tell you. Reads only conversation text; `tool_use`/`tool_result` blocks are skipped, so file dumps and pasted secrets are never returned. Entirely local — nothing is uploaded and one developer's transcripts are never visible to another. |
+| `/dp-agent:dp-module-review` | The pre-merge review gate. Reads the project once and caches a map (`reviews/.project-map.md`), detects the stack and which layers actually exist, then asks module / layer (frontend, backend, database, all) / depth (quick, deep) / job (code review, + security, + HTML report). Runs unguided sweep agents first with domain personas, then checklist passes as a safety net, refutes every finding batched by file, proves Criticals against a local instance, and writes `reviews/<module>-review-<date>.md` plus a JSON baseline so re-runs show only what is new. Verdict is rule-based (BLOCK / SHIP WITH FIXES / SHIP), and the coverage table records every dimension as checked, N/A, or **not checked and why**. Stack-agnostic - Node, Python, PHP, Go, Java, Ruby, .NET, Rust. |
 
 Each skill's frontmatter `description` is what drives auto-invocation — Claude may pick
 one of these up on its own if the request matches (e.g. pasting a ticket). You can also
@@ -226,15 +228,131 @@ it can't offer a different review UI or storage format.
 ```
 /dp-agent:dp-review 42   (or a PR URL, or omitted to infer from the current branch)
   → scope verdict: contained | drifted
-  → "hand off to /code-review for correctness/quality?"  →  yes  →  code-review (via Skill tool)
+  → "hand off to dp-module-review for correctness/quality?"  →  yes  →  dp-module-review
   → "post this scope summary as a PR comment?"           →  yes  →  gh pr comment
 ```
 
 Same checkpoint discipline as the author-side chain above — each arrow is an
 explicit `AskUserQuestion`, and posting to the PR only happens on confirmation,
-never by default. `code-review` is a different plugin's skill; the handoff goes
-through Claude Code's `Skill` tool by name, not a relative-path read the way
-dp-agent's own skills chain into each other.
+never by default. The handoff goes through Claude Code's `Skill` tool by name.
+
+### The review gate: `/dp-agent:dp-module-review`
+
+The other reviewer-side entry point, and the only skill here that reviews code
+rather than process. `dp-review` asks *"is this in scope for the ticket?"*;
+`dp-module-review` asks *"is it correct, safe, and finished?"* — and answers with
+a report and a merge verdict, not an opinion.
+
+It runs standalone on any repo, with or without a ticket, with or without a PR.
+
+#### What it covers
+
+| Dimension | Checked for |
+|---|---|
+| Security | Auth on every mutating route, IDOR, injection, XSS/CSRF, secrets, uploads, dependency CVEs, rate limiting |
+| Correctness | Broken wiring, logic and edge cases, dates and timezones, concurrency and idempotency, error handling, resource leaks |
+| Gaps | Built-but-never-registered, requirements with no code, missing empty/error/denied states |
+| Quality and tests | Whether tests exist and would actually fail, duplication, leftovers, N+1, logging hygiene |
+| Frontend | Escaping, rendered states, forms, accessibility, formatting, cleanup |
+| Backend | Contracts, timeouts, jobs and crons, storage, env validation |
+| Database | Migrations and reversibility, indexes, constraints, transactions, totals reconciling |
+| Release | Rollback path, breaking changes, blast radius |
+
+Every dimension appears in the report's coverage table as checked, N/A, or
+**not checked and why**. A silent omission is treated as a defect in the review.
+
+#### Flow
+
+```
+/dp-agent:dp-module-review
+  → project map          detect stack, tooling, layers, modules — cached in reviews/.project-map.md
+  → ask 4                module / layer / depth / job   (skips any question the repo already answers)
+  → surface              git diff --name-only against the base branch
+  → scans                lint, tests, secrets, dependency audit, SAST — whatever the stack has
+  → sweeps               unguided agents with personas: operator, intruder, domain expert, successor
+  → checklists           the safety net, told what the sweeps already found
+  → refute               every finding challenged, batched by file
+  → prove                Criticals reproduced against a local instance (deep)
+  → report               reviews/<module>-review-<date>.md + JSON baseline + verdict
+```
+
+Sweeps run **before** checklists deliberately. The checklist guarantees the boring
+critical items are never skipped; the sweeps find what no checklist contains. A
+review that returns only checklist items has under-reviewed, and the sweep briefs
+say so explicitly.
+
+Findings that survive refutation are the only ones reported. Refuted ones are
+dropped silently, not listed as considered.
+
+#### Generic across stacks
+
+Nothing is hardcoded to a language. The stack is detected from marker files, and
+tools are looked up rather than assumed:
+
+| Stack | Lint | SAST | Audit |
+|---|---|---|---|
+| Node | eslint | njsscan | npm audit |
+| Python | ruff | bandit | pip-audit |
+| PHP | phpstan | phpcs security-audit | composer audit |
+| Go | go vet | gosec | govulncheck |
+| Java | spotbugs | find-sec-bugs | dependency-check |
+| Ruby | rubocop | brakeman | bundler-audit |
+| .NET | dotnet format | Security Code Scan | dotnet list --vulnerable |
+| Rust | clippy | cargo-geiger | cargo audit |
+| Any | — | semgrep | gitleaks / trufflehog |
+
+It also detects **which layers actually exist** and never offers or runs one that
+does not. A backend service is never asked about frontend; a static site skips the
+layer question entirely; a monorepo asks which package first and applies that
+package's own shape. Even at layer `All`, a pass whose file types are absent from
+the diff is skipped and recorded as `N/A - no <layer> files in surface`.
+
+If a tool is missing it says so — `SAST: none available for <stack>` — and relies
+on the model passes. It never claims a scan it did not run.
+
+#### Efficiency
+
+| Run | Cost |
+|---|---|
+| Quick, all layers, with security | ~200k output tokens |
+| Deep, all layers, with security | ~800k |
+| Re-run against an existing baseline | ~100k |
+
+Quick is the default for routine work; escalate to Deep only when the change
+touches money, auth, or personal data. Cost is kept down by four choices:
+refutation batched by file rather than one agent per finding; hard caps on how
+much each agent reads and reports; deterministic scan results fed forward as
+"already found, do not re-report"; and the project map cached so only the first
+run pays to learn the repo.
+
+The report also writes `reviews/.accepted.json`. Findings the team consciously
+accepts are suppressed on later runs, so review #5 shows what is new rather than
+repeating review #1.
+
+#### Setting it up for a teammate
+
+Nothing beyond installing the plugin:
+
+```
+claude plugin marketplace add <this repo>
+claude plugin install dp-agent
+/dp-agent:dp-module-review
+```
+
+The checklists ship with the plugin, so two developers reviewing two different
+modules apply the same standard. Optional but worth it, per project:
+
+- Add a `CLAUDE.md` — the gate reads it, and anything already enforced by CI or a
+  linter is excluded from findings rather than reported as noise.
+- Install the stack's linter and SAST tool. The gate uses whatever is present and
+  never installs anything itself.
+- Commit `reviews/` so the baseline and the project map are shared, and the whole
+  team's re-runs stay cheap.
+
+For the strongest security coverage, install Anthropic's `claude-security` plugin
+alongside. At Deep depth the gate runs it as an independent second opinion, with
+its own verification, and merges the surviving findings.
+
 
 ## Hooks
 

@@ -1,6 +1,6 @@
 ---
 name: dp-review
-description: Check whether a GitHub PR's diff stays within the scope of its originating ticket — classifies every changed file as in-scope, questionable, or out-of-scope with reasoning, flags anything both out-of-scope and high blast-radius, and offers to hand off to the separate code-review skill for correctness/quality. Use when a reviewer with only high-level context needs to sanity-check a PR raised by someone else — especially a junior teammate — against what the ticket actually asked for, before or instead of a full code review.
+description: Check whether a GitHub PR's diff stays within the scope of its originating ticket — classifies every changed file as in-scope, questionable, or out-of-scope with reasoning, flags anything both out-of-scope and high blast-radius, and offers to hand off to the separate dp-module-review skill for correctness/quality. Use when a reviewer with only high-level context needs to sanity-check a PR raised by someone else — especially a junior teammate — against what the ticket actually asked for, before or instead of a full code review.
 argument-hint: "[PR number or URL, e.g. 42 — inferred from the current branch if omitted]"
 disallowed-tools: Edit, Write, NotebookEdit
 ---
@@ -8,7 +8,7 @@ disallowed-tools: Edit, Write, NotebookEdit
 # /dp-review — check a PR's diff stays in scope
 
 This skill answers one question: **does this PR only touch what its ticket actually
-asked for?** It is not a correctness or code-quality review — that's `code-review`'s
+asked for?** It is not a correctness or code-quality review — that's `dp-module-review`'s
 job (a separate plugin's skill, not part of dp-agent). Do not duplicate that work here:
 no bug-hunting, no simplification suggestions, no line-level confidence scoring. If
 asked for a "full review", do the scope check here and hand off via the
@@ -107,10 +107,10 @@ round up to "contained" because most of the PR looks fine.
 Always follow the verdict line with an actual `AskUserQuestion` call — don't leave the
 reviewer to infer next steps. Offer:
 
-- **Hand off to `code-review` for correctness/quality on this same PR** — a separate
+- **Hand off to `dp-module-review` for correctness/quality on this same PR** — a separate
   plugin's skill, not part of dp-agent, so read none of its internals directly; invoke
-  it via the `Skill` tool (`skill: "code-review"`), the same way a user would type
-  `/code-review`, passing the PR number as its target. This is the expected default
+  it via the `Skill` tool (`skill: "dp-module-review"`), the same way a user would type
+  `/dp-module-review`, passing the PR number as its target. This is the expected default
   next step once scope is checked, not an unusual detour.
 - **Post this scope summary as a PR comment** (`gh pr comment <number> --body ...`,
   using `scope-review.md`'s Output shape as the comment body) — only if the developer
@@ -121,4 +121,4 @@ reviewer to infer next steps. Offer:
 - **Stop here** — the scope check alone was what they wanted.
 
 If they pick both handoff and posting, post first (it's this skill's own output)
-before switching into `code-review`.
+before switching into `dp-module-review`.
