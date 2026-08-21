@@ -19,28 +19,6 @@
           }
         ]
       }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" index 12 --dir \"${CLAUDE_PROJECT_DIR}\" --stdin --quiet",
-            "timeout": 20
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/session-recall/recall.mjs\" hook --dir \"${CLAUDE_PROJECT_DIR}\" --quiet",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }

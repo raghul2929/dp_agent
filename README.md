@@ -50,7 +50,6 @@ below — this is the copy-paste version.
    | `/dp-agent:dp-git-help` | Explains your git state (behind/diverged/conflicted) in plain language — never resolves conflicts for you. |
    | `/dp-agent:dp-version` | Confirms which plugin version is installed — use this after any update. |
    | `/dp-agent:dp-review` | For reviewers: checks a teammate's PR only touches what its ticket asked for, then offers to hand off to `/code-review` for correctness/quality. Entry point is a PR number, not a ticket. |
-   | `/dp-agent:session-recall` | Searches this project's past Claude Code sessions. Mostly works on its own — see Hooks. |
 
    See "The skills" further below for full detail on each, and "Chained flow" for how
    they link together into one guided pass.
@@ -237,11 +236,7 @@ dp-agent's own skills chain into each other.
 
 ## Hooks
 
-`hooks/hooks.json` registers two `PreToolUse` guardrails plus three recall hooks.
-
-### Guardrails
-
-Both guardrails are real blocks (exit code
+`hooks/hooks.json` registers two `PreToolUse` guardrails, both real blocks (exit code
 `2`), not suggestions:
 
 - **`protect-tests.sh`** — blocks `Edit`/`Write` on a test file that already exists on
@@ -257,35 +252,6 @@ Both scripts run under `bash` (invoked explicitly via `${CLAUDE_PLUGIN_ROOT}` in
 `hooks.json`, so this works under Git Bash on Windows too — shebangs alone are ignored by
 Windows). They use `jq` if it's installed, and fall back to a `grep`/`sed` parse of the
 hook's JSON stdin if it isn't — no hard dependency either way.
-
-### Session recall
-
-Three hooks wire up the `session-recall` skill so past work resurfaces without anyone asking
-for it:
-
-- **`SessionStart`** lists recent sessions for the current project — dates, titles and the
-  subjects each one covered. No conversation content, so it costs almost nothing.
-- **`UserPromptSubmit`** compares every prompt against the summary cards -- their titles, topics
-  and summary prose -- and prints a short pointer when the overlap is real. Below the threshold it
-  prints nothing at all, which is the common case. Capped at two hits and 900 characters.
-  Measured on one 96-session corpus: 17 of 20 ordinary prompts stay silent (19 of 20 once
-  self-matches are excluded), and 1 of 4 paraphrase cases finds its session ranked first.
-  `recall.mjs eval` reproduces those numbers; `skills/session-recall/DESIGN-REVIEW.md` section 7b
-  records what was tried, what was rejected, and why the obvious relaxation must not be applied.
-- **`SessionEnd`** writes a summary card for the session that just closed: one `claude -p
-  --model haiku` call over an excerpt of the conversation, producing three sentences and a
-  dozen search terms. Cards are stored in `~/.claude/recall/<project>/`, deliberately outside
-  the transcript folder — Claude Code deletes transcripts after `cleanupPeriodDays` (30 by
-  default) and never touches that path, so the summary outlives the conversation. Existing
-  history is filled in once with `recall.mjs digest --backfill`.
-
-This matters most when someone new picks up a machine or a project: they ask an ordinary
-forward-looking question, unaware the ground was covered weeks ago, and the pointer surfaces
-anyway. Matching is on subject, not phrasing — no "did we already try this" required.
-
-Needs Node 18+ on `PATH`. All three hooks exit `0` on any failure, so a problem here can never
-block a prompt or a session exit. Transcripts are read locally and never leave the machine; quoted text is
-scrubbed of anything key-shaped before it is shown.
 
 ## Tuning the templates
 
