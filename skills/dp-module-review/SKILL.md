@@ -216,7 +216,7 @@ Also refresh `reviews/.project-map.md` if the review revealed the map was wrong.
 
 Offer: apply fixes, re-run against the baseline, or accept a finding. Do not edit code during a review.
 
-**Fix mode, when asked:** severity order, one at a time, root cause not symptom, follow the project's conventions. After each fix, confirm the original failure scenario no longer holds and nothing adjacent broke. Report per finding `fixed` / `skipped, reason` / `no change needed`. Stop and ask when a fix needs a decision that is the user's - a behaviour change, a schema change, a dependency upgrade. Never claim a fix you did not verify.
+**Fix mode, when asked:** if a dedicated fix skill is available (`module-fix`), hand off to it via the `Skill` tool with the report path - it collapses findings to root causes, fixes them grouped by file, and keeps a resumable fix log. If no such skill is installed, do it here: severity order, one at a time, root cause not symptom, following the project's conventions. Either way, after each fix confirm the original failure scenario no longer holds and nothing adjacent broke; report per finding `fixed` / `skipped, reason` / `no change needed`; stop and ask when a fix needs a decision that is the user's - a behaviour change, a schema change, a dependency upgrade. Never claim a fix you did not verify.
 
 ## Checkpoint format
 
