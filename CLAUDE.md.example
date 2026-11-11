@@ -56,6 +56,19 @@ Delete this comment block once you've filled the file in.
 - Merge strategy (squash / merge commit / rebase):
 - Draft-PR-by-default? Y/N:
 
+## License policy
+
+<!-- TODO(team): /dp-module-review and /dp-ai-review read this to judge dependencies, vendored
+     files, assets, models and datasets. Full format and the exceptions register live in
+     templates/license-policy.md - copy it to LICENSE_POLICY.md and link it here, or fill
+     these lines in directly. Blank means the review runs report-only (lists licences, no verdict). -->
+- Mode (strict allowlist / permissive family / report-only):
+- Allowed licences (e.g. MIT, Apache-2.0):
+- Never allowed:
+- Applies to build-time tools, fonts/icons, container images, models, hosted APIs?:
+- How it is distributed (hosted only / browser bundle / binaries / on-prem):
+- Exceptions register location:
+
 ## Anything else Claude should know
 
 <!-- TODO(team): known gotchas, deprecated areas to avoid touching, in-flight

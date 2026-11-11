@@ -15,6 +15,7 @@ Copy this structure. Delete sections that genuinely do not apply - but never del
 | Layer | Backend / Frontend / All |
 | Depth | Quick / Standard / Deep |
 | Surface | <N files, ~N lines> - diff against `<base>` / full module tree (no git history) |
+| Licence policy | strict / permissive-family / report-only / none found - source: `<file>` |
 | Reviewed by | Claude Code `/module-review` |
 
 **Summary:** <2-4 sentences. What this module does, the overall state of it, and the one thing that most needs attention.>
@@ -57,11 +58,22 @@ Terse list. `file:line` - what and why. No ceremony.
 | Tests | | |
 | Secret scan | | |
 | Dependency audit | | |
+| Licence scan | | tool / metadata only |
 | SAST | | |
 | Built-in `security-review` | | ran / skipped - reason |
 | Built-in `code-review` | | ran at level X / skipped - reason |
 
 Record "not installed" or "not configured" honestly. A missing tool is itself a finding if the module is going to main.
+
+### Licence inventory
+
+Only when a policy exists or the job is licence-focused. Grouped by licence, never one row per package.
+
+| Licence (SPDX) | Count | Scope | Policy result | Evidence |
+|---|---|---|---|---|
+| | | runtime / build / dev / vendored / asset | allow / exception / deny / unknown | metadata / LICENSE read |
+
+List every `deny` and `unknown` entry individually with its dependency path. Exceptions used are named with their expiry.
 
 ---
 
@@ -77,6 +89,7 @@ Every dimension, every time. `Pass` / `Findings` / `N/A` / `Not checked`. Not-ch
 | Output / XSS / CSRF | | |
 | Secrets and PII | | |
 | Dependencies | | |
+| Dependency licences | | |
 | Abuse and rate limiting | | |
 | Broken code / wiring | | |
 | Logic and edge cases | | |

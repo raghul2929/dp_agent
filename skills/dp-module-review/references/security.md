@@ -77,6 +77,7 @@ These are the boring, critical items that get skipped without a list. Verify eve
 - [ ] Lockfile committed. New dependencies justified, maintained, and not typosquats.
 - [ ] Known CVEs from the audit triaged - reachable or not, and say which.
 - [ ] No install-time scripts from unfamiliar packages; no git/tarball URL dependencies.
+- [ ] Dependency licences match the declared policy - run `licenses.md` rather than duplicating it here.
 
 ## 7. Abuse and availability
 
