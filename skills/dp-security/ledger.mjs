@@ -714,10 +714,20 @@ export function aiSignals(ctx, ev, { sample = 15 } = {}) {
     } catch { /* unreadable or deleted: no signal */ }
   }
   const outside = aiFiles.filter((f) => !inAiCell.has(f));
+  // A model package in a manifest that no ai layer covers. This is the "someone installed an AI
+  // SDK in a module that has no ai layer" case, and it must not stay silent just because some
+  // OTHER module already has one.
+  const sdkOutside = new Map();
+  for (const s of sdk) {
+    if (inAiCell.has(s.file)) continue;
+    if (!sdkOutside.has(s.file)) sdkOutside.set(s.file, new Set());
+    sdkOutside.get(s.file).add(s.package);
+  }
   return {
     sdk_in_manifests: sdk,
     ai_files: aiFiles.length,
     outside_ai_cells: { count: outside.length, sample: outside.slice(0, sample) },
+    sdk_outside_ai_cells: { count: sdkOutside.size, sample: [...sdkOutside].slice(0, sample).map(([file, pkgs]) => ({ file, packages: [...pkgs].sort() })) },
     no_ai_layer: (sdk.length > 0 || aiFiles.length > 0) && !hasAiCell,
   };
 }
@@ -780,6 +790,7 @@ export function buildStatus(ctx, ev, opts = {}) {
     if (uncovered.count) problems.push(`${plural(uncovered.count, 'code or config file')} in no cell, e.g. ${uncovered.sample.slice(0, 3).join(', ')}`);
     if (ai.no_ai_layer) problems.push('AI signals found but the registry has no ai layer');
     else if (ai.outside_ai_cells.count) problems.push(`${plural(ai.outside_ai_cells.count, 'AI file')} outside every ai layer, e.g. ${ai.outside_ai_cells.sample.slice(0, 3).join(', ')}`);
+    if (!ai.no_ai_layer && ai.sdk_outside_ai_cells.count) problems.push(`model packages in ${ai.sdk_outside_ai_cells.sample.slice(0, 3).map((s) => `${s.file} (${s.packages.join(', ')})`).join('; ')} sit outside every ai layer`);
   }
   return {
     rollup, counts, open, cells,
@@ -1206,6 +1217,10 @@ export function renderProgress(ctx, ev, plan, status) {
   if (status.ruleset_behind.length) L.push('', `Reviewed under an older ruleset: ${status.ruleset_behind.join(', ')}. Nothing is forced; re-run them to apply the newer checklists.`);
   if (status.uncovered.count) L.push('', `## Not covered by any cell`, '', `${plural(status.uncovered.count, 'code or config file')} belong to no module layer, so no review reads them: ${status.uncovered.sample.map((f) => '`' + f + '`').join(', ')}${status.uncovered.count > status.uncovered.sample.length ? ', ...' : ''}. Add them to a layer (an \`infra\` layer fits CI and Docker files) or to \`ignore\`.`);
   const ai = status.ai;
+  if (!ai.no_ai_layer && ai.sdk_outside_ai_cells.count) {
+    L.push('', '## Model packages outside any ai layer', '');
+    L.push(`These manifests install a model SDK or model runtime, but no \`ai\` layer covers them, so \`dp-ai-review\` has not read the code that uses it: ${ai.sdk_outside_ai_cells.sample.map((s) => `\`${s.file}\` (${s.packages.join(', ')})`).join('; ')}. Add the module's model code to an \`ai\` layer, or note why these packages are not a model in the loop.`);
+  }
   if (ai.no_ai_layer || ai.outside_ai_cells.count) {
     L.push('', '## AI code outside any ai layer', '');
     if (ai.no_ai_layer) L.push(`AI signals were found (${ai.sdk_in_manifests.length ? ai.sdk_in_manifests.slice(0, 4).map((s) => '`' + s.package + '`').join(', ') + ' in manifests' : plural(ai.ai_files, 'file') + ' importing a model SDK'}) but the registry has no \`ai\` layer, so \`dp-ai-review\` has never read this code. Add one.`);
@@ -1302,8 +1317,10 @@ function formatPlan(plan) {
 
 function aiLines(ai) {
   if (ai.no_ai_layer) return [`AI signals but NO ai layer in the registry (${ai.sdk_in_manifests.slice(0, 3).map((s) => s.package).join(', ') || plural(ai.ai_files, 'file')}): add one so dp-ai-review reads it`];
-  if (ai.outside_ai_cells.count) return [`AI code outside any ai layer: ${plural(ai.outside_ai_cells.count, 'file')}, e.g. ${ai.outside_ai_cells.sample.slice(0, 3).join(', ')}`];
-  return [];
+  const out = [];
+  if (ai.outside_ai_cells.count) out.push(`AI code outside any ai layer: ${plural(ai.outside_ai_cells.count, 'file')}, e.g. ${ai.outside_ai_cells.sample.slice(0, 3).join(', ')}`);
+  if (ai.sdk_outside_ai_cells.count) out.push(`Model packages outside any ai layer: ${ai.sdk_outside_ai_cells.sample.slice(0, 3).map((s) => `${s.file} (${s.packages.join(', ')})`).join('; ')}`);
+  return out;
 }
 
 function formatStatus(st) {
