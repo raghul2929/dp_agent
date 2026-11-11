@@ -16,6 +16,10 @@ One gate for any stack. Read the project once, ask four questions, run only what
 
 ---
 
+## Orchestrated mode
+
+If `dp-security` invoked you with a **brief** (a path to `reviews/.ledger/pending/<cell>.brief.json`), read `../dp-security/references/orchestrated-mode.md` and follow it. Scope, depth and job come from the brief, so skip Step 2. The surface comes from the brief's `kind`, not from `git diff`. Replay earlier findings first. Do not run `begin` or `record` yourself: the orchestrator owns the ledger. With no brief, ignore this section and run as written below.
+
 ## Step 1 - Project map (cached)
 
 Look for `reviews/.project-map.md` first.
@@ -29,6 +33,7 @@ Look for `reviews/.project-map.md` first.
 - Module list: name -> paths
 - Conventions observed from `references/project-context.md`
 - What automation already covers (CI, hooks, linter)
+- **Licence policy** - from `LICENSE_POLICY.md` or a "License policy" section of `CLAUDE.md`, per `references/licenses.md` §0: mode, allow / exception / deny lists, scope, distribution model, exceptions register. None found means report-only.
 - Risk ranking of areas
 
 Also read `CLAUDE.md` / `AGENTS.md` / ADRs if present - the project's declared rules outrank anything inferred.
@@ -90,7 +95,7 @@ Detect tools with `references/toolchain.md`. Use what is installed, never instal
 
 1. **Lint / typecheck / build / tests** - prefer the project's own scripts. No tests or no linter is itself a finding.
 2. **Secrets** - `gitleaks` or `trufflehog` if present, else grep for credential patterns and committed key files. In a git repo, scan history too.
-3. **Dependencies** - the stack's audit command. Lockfile committed? Any dependency from a raw git or tarball URL?
+3. **Dependencies** - the stack's audit command. Lockfile committed? Any dependency from a raw git or tarball URL? **Licences:** build the inventory with the stack's licence tool (`references/licenses.md` §1) and keep the result for Step 6.
 4. **SAST** (security jobs only) - the stack's tool, or `semgrep` with explicit rule packs. Never `--config=auto`.
 5. **Leftovers** - debug output, commented-out blocks, `TODO`/`FIXME`, hardcoded hosts and test accounts.
 
@@ -135,6 +140,8 @@ Now catch the boring-but-critical items a sweep skims past. These are mechanical
 
 **Quick** - Tier 1 sections only, one agent per selected layer plus one for correctness and gaps.
 **Deep** - Tier 1 and Tier 2, one agent per dimension: correctness, gaps, quality-tests, the selected layer files, and security (outsider and insider framings) when the job includes security.
+
+**Licences** - `references/licenses.md` runs as its own pass whenever the job includes `+ Security` or the diff changes a manifest or lockfile: Tier 1 at Quick, Tier 1 and 2 at Deep. It judges the Step 4 inventory against the declared policy; it never decides legal compatibility, and it labels each finding `metadata` unless the LICENSE file was read.
 
 Every checklist brief:
 
@@ -187,7 +194,7 @@ Label these `PROVEN` with repro steps. If the app cannot be started, say so and 
 
 ## Step 9 - Report
 
-Write `reviews/<module>-review-<YYYY-MM-DD>.md` using `references/report-template.md`, plus a JSON sidecar with stable finding ids. Give the user the path and the verdict inline - the only long output allowed in chat.
+Write `reviews/<module>-review-<YYYY-MM-DD>.md` using `references/report-template.md`, plus a JSON sidecar with stable finding ids (schema: `dp-security/references/orchestrated-mode.md`, section *The sidecar*; each finding carries `id`, `severity`, `file`, `line`, `scenario` and `fix`). Give the user the path and the verdict inline - the only long output allowed in chat.
 
 **Verdict is a rule:**
 
@@ -199,6 +206,8 @@ Write `reviews/<module>-review-<YYYY-MM-DD>.md` using `references/report-templat
 | Nothing above Low, coverage table complete | `SHIP` |
 
 An incomplete review caps at `SHIP WITH FIXES` regardless of findings. Name which rule fired.
+
+Licence findings use the severities in `references/licenses.md`: a deny-listed licence in shipped or runtime code, or a runtime dependency with no or an unknown licence, is Critical or High and so BLOCKs by the rules above. A permissive licence outside a `strict` allowlist with no recorded exception is Medium.
 
 The **coverage table** lists every dimension as pass / fail / N/A / **not checked and why**, plus which tools and plugins ran. Silent omission is not allowed. A **Not reviewed** section states skipped files, missing tools, and unavailable history.
 
@@ -216,7 +225,7 @@ Also refresh `reviews/.project-map.md` if the review revealed the map was wrong.
 
 Offer: apply fixes, re-run against the baseline, or accept a finding. Do not edit code during a review.
 
-**Fix mode, when asked:** hand off to `dp-module-fix` via the `Skill` tool, passing the report path. It collapses the findings to root causes, fixes them grouped by file, verifies each one against its own failure scenario, and keeps a resumable fix log. Do not fix findings inline here - a review that also edits is a review nobody can check.
+**Fix mode, when asked:** if a dedicated fix skill is available (`module-fix`), hand off to it via the `Skill` tool with the report path - it collapses findings to root causes, fixes them grouped by file, and keeps a resumable fix log. If no such skill is installed, do it here: severity order, one at a time, root cause not symptom, following the project's conventions. Either way, after each fix confirm the original failure scenario no longer holds and nothing adjacent broke; report per finding `fixed` / `skipped, reason` / `no change needed`; stop and ask when a fix needs a decision that is the user's - a behaviour change, a schema change, a dependency upgrade. Never claim a fix you did not verify.
 
 ## Checkpoint format
 
