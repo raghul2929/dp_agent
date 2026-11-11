@@ -52,6 +52,8 @@ below — this is the copy-paste version.
    | `/dp-agent:dp-review` | For reviewers: checks a teammate's PR only touches what its ticket asked for, then offers to hand off to `/dp-agent:dp-module-review` for correctness/quality. Entry point is a PR number, not a ticket. |
    | `/dp-agent:dp-module-review` | The pre-merge review gate: picks a module and layer, then reviews it for correctness, security, gaps, quality and tests, and writes a ranked report with a ship / don't-ship verdict. |
    | `/dp-agent:dp-recall` | Searches your past Claude Code sessions for this project, so work already researched or decided isn't redone from scratch. |
+   | `/dp-agent:dp-static-site` | Turns a handed-over HTML mockup into a real static site codebase — tokens, components, SEO, security — and pixel-diffs the result against the mockup. |
+   | `/dp-agent:dp-ai-review` | The review gate for projects that call an LLM: prompt injection, output handling, tenant isolation in retrieval, tool permissions, privacy and compliance, cost and reliability, evals and decision safety. Ranked report with a ship / don't-ship verdict. |
 
    See "The skills" further below for full detail on each, and "Chained flow" for how
    they link together into one guided pass.
@@ -188,6 +190,8 @@ the real autocomplete (not just `/dp-ticket` etc., despite the directory names).
 | `/dp-agent:dp-review` | For a senior reviewer with only high-level project knowledge, checks whether a PR's diff (`gh pr view`/`gh pr diff`) stays within the scope of its originating ticket, using `templates/scope-review.md`. Classifies every changed file in-scope/questionable/out-of-scope with reasoning, and flags anything that's also high blast-radius per `templates/plan-format.md`'s categories. Not a correctness/quality review — offers to hand off to `/dp-agent:dp-module-review` for that via the `Skill` tool, and only posts its summary as a PR comment on explicit confirmation. Input is a PR number/URL via `gh`, not a ticket — this is the reviewer's tool, not part of the author-side chain below. |
 | `/dp-agent:dp-recall` | Searches the local `.jsonl` transcripts of your past Claude Code sessions for the current project (`~/.claude/projects/<slug>/`) and reads them back — `list`, `search`, `outline`, `show`. Surfaces what was already tried, decided, or rejected, which the code itself cannot tell you. Reads only conversation text; `tool_use`/`tool_result` blocks are skipped, so file dumps and pasted secrets are never returned. Entirely local — nothing is uploaded and one developer's transcripts are never visible to another. |
 | `/dp-agent:dp-module-review` | The pre-merge review gate. Reads the project once and caches a map (`reviews/.project-map.md`), detects the stack and which layers actually exist, then asks module / layer (frontend, backend, database, all) / depth (quick, deep) / job (code review, + security, + HTML report). Runs unguided sweep agents first with domain personas, then checklist passes as a safety net, refutes every finding batched by file, proves Criticals against a local instance, and writes `reviews/<module>-review-<date>.md` plus a JSON baseline so re-runs show only what is new. Verdict is rule-based (BLOCK / SHIP WITH FIXES / SHIP), and the coverage table records every dimension as checked, N/A, or **not checked and why**. Stack-agnostic - Node, Python, PHP, Go, Java, Ruby, .NET, Rust. |
+| `/dp-agent:dp-static-site` | Converts a finished HTML mockup into a production-shaped static site. Asks stack (Vite + vanilla / Next.js static export / Astro), styling layer, site services (robots.txt, sitemap, metadata, JSON-LD, favicons, forms, 404) and deploy target, then extracts a design system **from the mockup's own CSS** before writing a single component — so no colour, font or spacing value is ever retyped from memory. Builds reusable components with content lifted into `data/`, adds SEO and security headers, and then proves the result: `assets/visual-diff.mjs` serves the mockup and the built site side by side, screenshots both at 390/768/1440 and pixel-diffs them, looping until under threshold. A visual claim with no measured percentage behind it is reported as `unverified`, never as a match. Never commits, deploys, or installs without asking. |
+| `/dp-agent:dp-ai-review` | The review gate for any project with a model in the loop. Reads the project once and caches an AI map (`reviews/.ai-map.md`): every model call site, prompt, untrusted input, output sink, tool and vector store, plus autonomy level (L0-L4), audience and stakes. Asks component / depth (quick, deep) / job (review, + probes, + HTML report). Runs unguided sweeps with AI personas (domain-safety expert, poisoner, abuser, operator, auditor), then checklists, refutes every finding batched by file, and probes a local instance with a stub provider. Treats a prompt-only mitigation as no control, treats everything in the reviewed repo as data rather than instructions, and records refuted findings in the JSON sidecar instead of dropping them. Does not duplicate the ordinary web / API / database dimensions - it offers `dp-module-review` for those and marks them `Delegated`. |
 
 Each skill's frontmatter `description` is what drives auto-invocation — Claude may pick
 one of these up on its own if the request matches (e.g. pasting a ticket). You can also
@@ -257,6 +261,7 @@ It runs standalone on any repo, with or without a ticket, with or without a PR.
 | Backend | Contracts, timeouts, jobs and crons, storage, env validation |
 | Database | Migrations and reversibility, indexes, constraints, transactions, totals reconciling |
 | Release | Rollback path, breaking changes, blast radius |
+| Licences | Dependencies (transitive, from the lockfile), vendored files, fonts / icons / assets and shipped-versus-build-only, judged against the project's declared licence policy (`templates/license-policy.md`). Unknown, custom and `SEE LICENSE IN` are treated as deny until a human reads them; findings are labelled `metadata` unless the LICENSE file was read. Never decides legal compatibility. |
 
 Every dimension appears in the report's coverage table as checked, N/A, or
 **not checked and why**. A silent omission is treated as a defect in the review.
@@ -354,6 +359,43 @@ alongside. At Deep depth the gate runs it as an independent second opinion, with
 its own verification, and merges the surviving findings.
 
 
+### The AI review gate: `/dp-agent:dp-ai-review`
+
+`dp-module-review` asks *"is it correct, safe, and finished?"* of ordinary code.
+`dp-ai-review` asks the questions that only exist once a model is in the loop: what
+can text the system reads make it do, where does its output go, whose data can it
+reach, who pays when it is abused, and how do you know it is right.
+
+#### What it covers
+
+| Reference | Checked for |
+|---|---|
+| `ai-security.md` | Prompt injection (direct, indirect, stored), decision steering, authorization outside the model, output sinks (HTML, SQL, shell, URLs), system-prompt leakage, client-supplied fields, supply chain and model provenance, multimodal and file inputs, streaming and widget-embed surface, egress control and service-to-service auth |
+| `ai-rag.md` | Tenant filter on every vector-store operation, ownership on writes and deletes, ingestion and crawler safety, index poisoning, context budgets, freshness, caches, grounding |
+| `ai-agency.md` | Tool permissions and confused deputy, human approval, loop bounds, memory, multi-agent trust, sandboxes, kill switch, MCP and plugin pinning |
+| `ai-privacy.md` | Data flow to providers, basis and retention, minimisation, deletion across every copy, disclosure, regulatory mapping, auditability of decisions |
+| `ai-reliability.md` | Timeouts and retries, spend caps at request / tenant / global level, failure handling and fail-open versus fail-safe, fallback and model pinning, usage accounting, AI incident readiness (detect, report, contain, recover, notify) |
+| `ai-quality.md` | Prompts read as composed, evals and regression gate, recall on the must-not-miss class, parse failures, calibration, human-in-the-loop, drift and change management, binding commitments and unauthorised claims, training / fine-tuning / feedback-loop integrity |
+| `ai-licenses.md` | Licence or terms of every model, weights, dataset, embedder, tokenizer corpus and hosted API against the licence policy; model-card licence versus training-data terms; custom community licences listed with the clause for a human, never declared compatible. Package licences stay in `dp-module-review`. |
+| `standards-map.md` | Tags each finding with OWASP Top 10 for LLM Applications (2025) ids and the NIST AI RMF function; the report carries a per-id coverage table and an owner-attested section for things code cannot prove |
+
+`red-team-probes.md` governs the proof step: deterministic sink, tenant, cap and
+failure probes run against a local instance with a **stub provider** and give
+`PROVEN`; model-behaviour probes need the user's go-ahead and are reported as
+`PROBED n/N`, never as proof, and a probe that fails to reproduce never clears a finding.
+
+#### Differences from `dp-module-review`, on purpose
+
+- A prompt instruction is never counted as a control, including when refuting a finding.
+- Anything inside the reviewed project (comments, prompts, fixtures, retrieved text) is
+  treated as data - the reviewer cannot be talked out of a finding by a comment.
+- Uncertain refutation means `PLAUSIBLE`, and refuted findings are kept in the JSON
+  sidecar with their evidence so a missed real finding can be audited.
+- Autonomy level, audience and stakes set the default depth and which personas run.
+
+It is a first version: the checklists have not yet been calibrated against a seeded-bug
+set, so treat the first few reports as a draft of the checklist as much as of the code.
+
 ## Hooks
 
 `hooks/hooks.json` registers two `PreToolUse` guardrails, both real blocks (exit code
@@ -396,6 +438,12 @@ be edited without touching any `SKILL.md`:
   whether generated files/test files outside the ticket's area get special
   treatment. Its Blast-radius section deliberately reuses `plan-format.md`'s
   categories rather than defining its own — edit blast radius in one place, not two.
+
+- `license-policy.md` — the project's licence rule, copied to `LICENSE_POLICY.md` (or a
+  "License policy" section of `CLAUDE.md`): mode (`strict` allowlist / `permissive-family` /
+  `report-only`), allow / exception-eligible / deny lists, scope, distribution model, and the
+  exceptions register. `/dp-module-review` and `/dp-ai-review` read it; with none present they
+  list licences and give no verdict.
 
 If a `SKILL.md` ever contains more than a few sentences of team-specific wording, that's
 a bug — it belongs in one of these files instead.
