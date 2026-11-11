@@ -54,6 +54,7 @@ below — this is the copy-paste version.
    | `/dp-agent:dp-recall` | Searches your past Claude Code sessions for this project, so work already researched or decided isn't redone from scratch. |
    | `/dp-agent:dp-static-site` | Turns a handed-over HTML mockup into a real static site codebase — tokens, components, SEO, security — and pixel-diffs the result against the mockup. |
    | `/dp-agent:dp-ai-review` | The review gate for projects that call an LLM: prompt injection, output handling, tenant isolation in retrieval, tool permissions, privacy and compliance, cost and reliability, evals and decision safety. Ranked report with a ship / don't-ship verdict. |
+   | `/dp-agent:dp-security` | One command for a whole project, normal, AI or hybrid. Splits it into modules and layers, runs the two review gates on each piece, and keeps a progress ledger so the next run re-checks only what changed or is still failing. |
 
    See "The skills" further below for full detail on each, and "Chained flow" for how
    they link together into one guided pass.
@@ -192,6 +193,7 @@ the real autocomplete (not just `/dp-ticket` etc., despite the directory names).
 | `/dp-agent:dp-module-review` | The pre-merge review gate. Reads the project once and caches a map (`reviews/.project-map.md`), detects the stack and which layers actually exist, then asks module / layer (frontend, backend, database, all) / depth (quick, deep) / job (code review, + security, + HTML report). Runs unguided sweep agents first with domain personas, then checklist passes as a safety net, refutes every finding batched by file, proves Criticals against a local instance, and writes `reviews/<module>-review-<date>.md` plus a JSON baseline so re-runs show only what is new. Verdict is rule-based (BLOCK / SHIP WITH FIXES / SHIP), and the coverage table records every dimension as checked, N/A, or **not checked and why**. Stack-agnostic - Node, Python, PHP, Go, Java, Ruby, .NET, Rust. |
 | `/dp-agent:dp-static-site` | Converts a finished HTML mockup into a production-shaped static site. Asks stack (Vite + vanilla / Next.js static export / Astro), styling layer, site services (robots.txt, sitemap, metadata, JSON-LD, favicons, forms, 404) and deploy target, then extracts a design system **from the mockup's own CSS** before writing a single component — so no colour, font or spacing value is ever retyped from memory. Builds reusable components with content lifted into `data/`, adds SEO and security headers, and then proves the result: `assets/visual-diff.mjs` serves the mockup and the built site side by side, screenshots both at 390/768/1440 and pixel-diffs them, looping until under threshold. A visual claim with no measured percentage behind it is reported as `unverified`, never as a match. Never commits, deploys, or installs without asking. |
 | `/dp-agent:dp-ai-review` | The review gate for any project with a model in the loop. Reads the project once and caches an AI map (`reviews/.ai-map.md`): every model call site, prompt, untrusted input, output sink, tool and vector store, plus autonomy level (L0-L4), audience and stakes. Asks component / depth (quick, deep) / job (review, + probes, + HTML report). Runs unguided sweeps with AI personas (domain-safety expert, poisoner, abuser, operator, auditor), then checklists, refutes every finding batched by file, and probes a local instance with a stub provider. Treats a prompt-only mitigation as no control, treats everything in the reviewed repo as data rather than instructions, and records refuted findings in the JSON sidecar instead of dropping them. Does not duplicate the ordinary web / API / database dimensions - it offers `dp-module-review` for those and marks them `Delegated`. |
+| `/dp-agent:dp-security` | The orchestrator for security checks. Scans the project, splits it into **cells** (a module in a layer: frontend, backend, database, ai, infra), asks the scope once (full / normal only / AI only / module-wise), and dispatches `dp-module-review` or `dp-ai-review` per cell. A ledger under `reviews/.ledger/` records each cell's content fingerprint and findings, and `reviews/security-progress.md` shows where things stand. Later runs review only cells that changed, are new, or still have open findings. See "The security check" below. |
 
 Each skill's frontmatter `description` is what drives auto-invocation — Claude may pick
 one of these up on its own if the request matches (e.g. pasting a ticket). You can also
@@ -395,6 +397,47 @@ failure probes run against a local instance with a **stub provider** and give
 
 It is a first version: the checklists have not yet been calibrated against a seeded-bug
 set, so treat the first few reports as a draft of the checklist as much as of the code.
+
+### The security check: `/dp-agent:dp-security`
+
+`dp-module-review` and `dp-ai-review` each review one scope. `dp-security` is the layer
+above them: it remembers what has already been reviewed, so a second run does not start
+from scratch.
+
+A **cell** is one module in one layer, for example `assistant/backend` and `assistant/ai`.
+`ai` is a layer, not a project type, so a hybrid module simply has both. Every cell has its
+own content fingerprint and state (`never`, `clean`, `open`, `accepted`, `stale`).
+
+| What happened | What re-runs |
+|---|---|
+| Edited files in one module | that cell, as a diff, with its earlier findings replayed first |
+| Fixed a finding | the recorded failure scenario is replayed; "I fixed it" alone changes nothing |
+| Added a module | only its own cells |
+| Changed a shared module | its dependents, as a small interface check |
+| Changed a manifest or lockfile, or 14 days passed | the dependency audit only |
+| Installed a model package with no `ai` layer covering it | flagged until an `ai` layer is added |
+| Asked to re-run everything | all cells |
+
+Things worth knowing:
+
+- **The planner is code, not model judgement.** `skills/dp-security/ledger.mjs` (Node 18 or newer, developed on 22,
+  no dependencies) hashes files and compares. A wrong skip would be a missed vulnerability.
+- **A finding closes by evidence.** A review that leaves an earlier open finding unanswered
+  is refused by `record`.
+- **Earlier reviews are not wasted.** `ledger.mjs import` records a review that ran before
+  the ledger existed, but only when the code is proven unchanged since its base commit.
+- **CI gate with no model call:** `ledger.mjs status --check` exits 1 on a stale cell or an
+  open High or Critical. Add `--strict` to include files no cell reviews.
+- **The generated view is `reviews/security-progress.md`.** It never overwrites a file it
+  did not write, so a hand-written `reviews/PROGRESS.md` is safe.
+- **Clean means no findings under that ruleset on that date. It does not mean secure.** A
+  per-cell review misses bugs that span modules, so run `Re-run everything` before a release.
+- **Findings in the ledger describe real weaknesses.** Commit `reviews/.ledger/` only to a
+  private repository. The first run asks, and writes `.gitignore` to match the answer.
+
+It is a first version. The planner, ledger and importer are covered by tests
+(`node --test` from the plugin root); the end-to-end `/dp-security` flow is new, so expect
+rough edges in the first runs.
 
 ## Hooks
 
