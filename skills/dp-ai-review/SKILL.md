@@ -20,6 +20,10 @@ This skill covers what is **specific to a model in the loop**. The ordinary dime
 
 ---
 
+## Orchestrated mode
+
+If `dp-security` invoked you with a **brief** (a path to `reviews/.ledger/pending/<cell>.brief.json`), read `../dp-security/references/orchestrated-mode.md` and follow it. Scope, depth and job come from the brief, so skip Step 2. The surface comes from the brief's `kind`, not from `git diff`. Replay earlier findings first. Do not run `begin` or `record` yourself: the orchestrator owns the ledger. Step 11's offer to run `dp-module-review` is skipped: record the sibling cells from the brief as `Delegated`, with their state. With no brief, ignore this section and run as written below.
+
 ## Step 1 - AI map (cached)
 
 Look for `reviews/.ai-map.md` first.
@@ -193,7 +197,7 @@ Use `references/red-team-probes.md`. Its hard rules bind this step: local and th
 
 Tag every surviving finding with its `Maps to:` labels using `references/standards-map.md`. Before the report is written, ask the owner the **owner-attested** questions in the report template (provider terms, zero-retention, spend cap, production-versus-repo configuration, applicable regulations) in one **AskUserQuestion** call, and record each answer as `attested` or `unknown` - never `verified`. The user may skip the call; then every row is `unknown` and the items are repeated under Not reviewed.
 
-Write `reviews/<component>-ai-review-<YYYY-MM-DD>.md` using `references/report-template.md`, plus a JSON sidecar with stable finding ids, the trust-boundary table, and the refuted findings with their evidence. Give the user the path and the verdict inline - the only long output allowed in chat.
+Write `reviews/<component>-ai-review-<YYYY-MM-DD>.md` using `references/report-template.md`, plus a JSON sidecar with stable finding ids, the trust-boundary table, and the refuted findings with their evidence. Use the sidecar schema in `dp-security/references/orchestrated-mode.md` (section *The sidecar*): each finding carries `id`, `severity`, `file`, `line`, `scenario` and `fix`, and `trust_boundaries`, `probes` and `refuted` stay as extra keys the ledger ignores. Give the user the path and the verdict inline - the only long output allowed in chat.
 
 **Verdict is a rule:**
 

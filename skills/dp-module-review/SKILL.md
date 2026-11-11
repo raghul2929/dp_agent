@@ -16,6 +16,10 @@ One gate for any stack. Read the project once, ask four questions, run only what
 
 ---
 
+## Orchestrated mode
+
+If `dp-security` invoked you with a **brief** (a path to `reviews/.ledger/pending/<cell>.brief.json`), read `../dp-security/references/orchestrated-mode.md` and follow it. Scope, depth and job come from the brief, so skip Step 2. The surface comes from the brief's `kind`, not from `git diff`. Replay earlier findings first. Do not run `begin` or `record` yourself: the orchestrator owns the ledger. With no brief, ignore this section and run as written below.
+
 ## Step 1 - Project map (cached)
 
 Look for `reviews/.project-map.md` first.
@@ -190,7 +194,7 @@ Label these `PROVEN` with repro steps. If the app cannot be started, say so and 
 
 ## Step 9 - Report
 
-Write `reviews/<module>-review-<YYYY-MM-DD>.md` using `references/report-template.md`, plus a JSON sidecar with stable finding ids. Give the user the path and the verdict inline - the only long output allowed in chat.
+Write `reviews/<module>-review-<YYYY-MM-DD>.md` using `references/report-template.md`, plus a JSON sidecar with stable finding ids (schema: `dp-security/references/orchestrated-mode.md`, section *The sidecar*; each finding carries `id`, `severity`, `file`, `line`, `scenario` and `fix`). Give the user the path and the verdict inline - the only long output allowed in chat.
 
 **Verdict is a rule:**
 

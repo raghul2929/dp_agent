@@ -14,7 +14,7 @@ Read it first. It is JSON written by `ledger brief`:
 | `kind` | `full`, `diff`, `interface` or `deps` - see below |
 | `reasons` | why this cell is on the list |
 | `depth` | `quick` or `deep`: already answered, do not ask again |
-| `files`, `file_count` | every file in the cell (capped at 400 names) |
+| `files`, `file_count`, `files_truncated` | every file in the cell. `files` is capped at 400 names, and `files_truncated` says when it was cut. Use the registry globs to see the rest |
 | `changed_files` | files added, modified or removed since the last review |
 | `upstream_changed` | for `interface`: the module that changed and the files that changed in it |
 | `replay` | earlier open findings to re-test first, each with its recorded `scenario` |
@@ -23,6 +23,7 @@ Read it first. It is JSON written by `ledger brief`:
 | `next_id` | the first free finding id; count up from it |
 | `siblings` | the module's other cells with their state and verdict |
 | `prior` | date, verdict, ruleset and report of the last review |
+| `ruleset` | the plugin version the review is running under. The sidecar's findings are recorded against it |
 
 ## What changes in the skill's steps
 
@@ -126,7 +127,9 @@ Write it next to the report as `reviews/<cell with / as ->-review-<YYYY-MM-DD>.j
 | `severity` | `Critical`, `High`, `Medium` or `Low` |
 | `file` | relative to the project root, forward slashes, no `..`. The file the finding lives in: the ledger watches it |
 | `scenario` | required. The concrete failure a later run replays. No scenario, no finding |
-| `check.regex` | optional. A narrow pattern matching the vulnerable line. It must be cheap: no nested quantifiers |
+| `fix` | optional. The smallest change that closes the finding |
+| `also` | optional. Other files the finding lives in. A change to any of them re-queues it |
+| `check` | optional: `{ "regex": "...", "file": "..." }`. `check.regex` is a narrow pattern matching the vulnerable line. It must be cheap: no nested quantifiers. A hint for the replay, never proof |
 | `status` | `PROVEN`, `CONFIRMED`, `CONFIRMED (static)` or `PLAUSIBLE`. For the audit trail. The ledger does not read it |
 | `baseline` | `true` when the finding matched the skill's baseline file |
 | `refuted` | findings the refutation pass rejected, with evidence. The ledger ignores it and the audit keeps it. `dp-ai-review` already requires this |
