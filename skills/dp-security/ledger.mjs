@@ -454,6 +454,11 @@ const locHash = (hashOf, f) => {
   return sha(locs.map((p) => `${p}\0${hashOf(p) ?? ''}`).join('\n'));
 };
 const touches = (changed, f) => !!changed && locsOf(f).some((p) => changed.modified.includes(p) || changed.removed.includes(p));
+// Locations of a finding that lie OUTSIDE this cell's own files (a fix in another module's
+// file). The cell's own fingerprint cannot see them, so each finding remembers what every such
+// location looked like (`loc_hashes`), and a difference now means the finding needs a replay.
+// A record without `loc_hashes` (older, or never tracked) never triggers this.
+const foreignMoved = (f, ownFiles, hashOf) => locsOf(f).filter((p) => !(p in ownFiles) && f.loc_hashes && p in f.loc_hashes && (f.loc_hashes[p] ?? null) !== (hashOf(p) ?? null));
 
 function lapseReason(f, hashOf, today) {
   if (f.state !== 'accepted') return null;
@@ -537,6 +542,13 @@ function evalCell(ctx, d, snap, rec, upstreamNow, order) {
     const age = daysBetween(rec.reviewed_at, ctx.today);
     if (age >= ctx.ttlDays) c.reasons.push({ type: 'ttl', days: age });
   }
+  // A finding whose location sits in ANOTHER cell's files: a fix there changes nothing in this
+  // cell's fingerprint, so without this the finding would stay open and never be replayed.
+  const openFindings = c.findings.filter((f) => f.eff === 'open');
+  const foreign = openFindings.filter((f) => foreignMoved(f, snap.files, hashOf).length);
+  if (foreign.length && d.layer !== 'deps') {
+    c.reasons.push({ type: 'finding-location', ids: foreign.map((f) => f.id), files: [...new Set(foreign.flatMap((f) => foreignMoved(f, snap.files, hashOf)))].sort() });
+  }
   if (!c.reasons.length) {
     c.state = c.findings.some((f) => f.eff === 'open') ? 'open' : c.findings.some((f) => f.eff === 'accepted') ? 'accepted' : 'clean';
     return c;
@@ -552,12 +564,15 @@ function evalCell(ctx, d, snap, rec, upstreamNow, order) {
   } else if (own) {
     c.action = 'review-diff';
     c.cost = 'diff';
+  } else if (foreign.length) {
+    // Own files are unchanged: replay the findings whose other locations moved, nothing wider.
+    c.action = 'review-diff';
+    c.cost = 'small';
   } else {
     c.action = 'interface-check';
     c.cost = 'small';
   }
-  const openNow = c.findings.filter((f) => f.eff === 'open');
-  c.replay = (c.action === 'review-full' ? openNow : openNow.filter((f) => touches(c.changed, f))).map((f) => f.id);
+  c.replay = (c.action === 'review-full' ? openFindings : openFindings.filter((f) => touches(c.changed, f) || foreign.includes(f))).map((f) => f.id);
   return c;
 }
 
@@ -591,6 +606,7 @@ export function reasonText(r) {
     case 'manifests': return `manifests or lockfiles changed: ${[...r.modified, ...r.added, ...r.removed].slice(0, 3).join(', ')}`;
     case 'upstream': return r.newDependency ? `new dependency on ${r.module}` : `upstream module ${r.module} changed`;
     case 'ttl': return `dependency audit is ${r.days} days old`;
+    case 'finding-location': return `files outside this cell changed where findings live: ${r.ids.join(', ')} (${r.files.slice(0, 3).join(', ')}${r.files.length > 3 ? ', ...' : ''})`;
     case 'rerun': return 're-run everything requested';
     default: return r.type;
   }
@@ -885,7 +901,7 @@ export function validateFindingsInput(inp, opts = {}) {
   return out;
 }
 
-function mergeFindings({ prior, input, kind, changed, hashOf, today, snapFiles }) {
+function mergeFindings({ prior, input, kind, changed, hashOf, today, snapFiles, locHashOf = hashOf }) {
   const priorEff = prior ? effectiveFindings(prior.findings, hashOf, today) : [];
   const byIdPrior = new Map(priorEff.map((f) => [f.id, f]));
   const resolvedMap = new Map(input.resolved.map((r) => [r.id, r]));
@@ -903,7 +919,7 @@ function mergeFindings({ prior, input, kind, changed, hashOf, today, snapFiles }
       resolvedNow.push({ id: f.id, severity: f.severity, title: f.title, file: f.file, resolved_at: today, evidence: resolvedMap.get(f.id).evidence });
       continue;
     }
-    const mustAccount = f.eff === 'open' && (kind === 'full' || kind === 'deps' || (kind === 'diff' && touches(changed, f)));
+    const mustAccount = f.eff === 'open' && (kind === 'full' || kind === 'deps' || (kind === 'diff' && (touches(changed, f) || foreignMoved(f, snapFiles, hashOf).length > 0)));
     if (mustAccount) unaccounted.push(f.id);
     else next[f.id] = strip(f);
   }
@@ -918,6 +934,7 @@ function mergeFindings({ prior, input, kind, changed, hashOf, today, snapFiles }
     const prev = byIdPrior.get(nf.id);
     const keep = { id: nf.id, severity: nf.severity, title: nf.title, file: nf.file, also: nf.also, line: nf.line, scenario: nf.scenario, fix: nf.fix, check: nf.check, status: nf.status, maps_to: nf.maps_to, note: nf.note };
     const fileHash = locHash(hashOf, nf);
+    keep.loc_hashes = Object.fromEntries(locsOf(nf).map((p) => [p, locHashOf(p) ?? null]));
     if (prev && prev.state === 'accepted' && !prev.lapse) next[nf.id] = { ...strip(prev), ...keep };
     else if (nf.baseline) next[nf.id] = { ...keep, state: 'accepted', first_seen: prev?.first_seen ?? today, accepted: { by: 'baseline', reason: 'listed in the skill baseline file', at: today, expires: null, file_hash: fileHash } };
     else next[nf.id] = { ...keep, state: 'open', first_seen: prev?.first_seen ?? today };
@@ -948,7 +965,10 @@ export function recordCell(ctx, id, inputRaw, o = {}) {
   if (!pending && !o.importedFrom) warnings.push('no `begin` snapshot: fingerprint taken now. Files edited during the review would be treated as reviewed.');
   const hashOf = (f) => snap.files[f] ?? ctx.hashOf(f);
   const changed = prior?.files ? diffFiles(prior.files, snap.files) : null;
-  const merged = mergeFindings({ prior, input, kind, changed, hashOf, today: ctx.today, snapFiles: snap.files });
+  // A location whose state at review time is not proven (an import found it changed since the
+  // reviewed commit) is remembered as unknown, so the very next plan replays that finding.
+  const locHashOf = (p) => (o.unprovenFiles?.has(p) ? null : hashOf(p));
+  const merged = mergeFindings({ prior, input, kind, changed, hashOf, today: ctx.today, snapFiles: snap.files, locHashOf });
 
   const partial = kind === 'interface';
   const rec = {
@@ -1110,10 +1130,12 @@ export function importCell(ctx, id, sidecarPath, o = {}) {
 
   // Recording a review stamps the CURRENT files as reviewed. That is only true if nothing in the
   // cell has changed since the review ran, so prove it, or refuse.
+  let changedSet = null;
   if (!o.assumeUnchanged) {
     if (!commit) throw new LedgerError('The sidecar has no base_commit, so the code cannot be checked against the review. Pass --assume-unchanged only if you know it has not changed since ' + date + '.');
     const changed = changedSince(ctx.root, commit);
     if (!changed) throw new LedgerError(`Cannot compare with commit ${commit} (no git, or the commit is unknown here). Pass --assume-unchanged only if you know the code has not changed since ${date}.`);
+    changedSet = changed;
     const moved = Object.keys(cell.files).filter((f) => changed.has(f)).sort();
     if (moved.length) {
       throw new LedgerError(`${plural(moved.length, 'file')} in ${id} changed since the review's base commit ${commit}, e.g. ${moved.slice(0, 5).join(', ')}.\n  Importing would record the changed code as reviewed. Review ${id} instead.`);
@@ -1128,11 +1150,16 @@ export function importCell(ctx, id, sidecarPath, o = {}) {
     const guess = abs.replace(/\.json$/i, '.md');
     if (guess !== abs && fs.existsSync(guess)) report = posix(path.relative(ctx.root, guess));
   }
+  // The proof above covers this cell's files. A finding location in another cell may have changed
+  // since the review; its state at review time is unknown, so it is recorded as unknown and the
+  // next plan replays that finding.
+  const unproven = new Set(changedSet ? norm.findings.flatMap((f) => [f.file, ...(f.also ?? [])]).filter((p) => p && !(p in cell.files) && changedSet.has(p)) : []);
   const result = recordCell(ctx, id, norm, {
     kind: 'full', verdict: raw.verdict, depth: ['quick', 'deep'].includes(raw.depth) ? raw.depth : null, report,
     commit, reviewedAt: date, ruleset: o.reviewedRuleset ?? raw.ruleset ?? 'unknown', importedFrom: rel, allowNoLocation: true,
+    unprovenFiles: unproven,
   });
-  return { ...result, imported: { legacy, findings: norm.findings.length, no_location: norm.no_location, skipped: norm.skipped, date, commit, report } };
+  return { ...result, imported: { legacy, findings: norm.findings.length, no_location: norm.no_location, skipped: norm.skipped, date, commit, report, unproven_locations: [...unproven].sort() } };
 }
 
 // The work order handed to a review skill for one cell. Everything a reviewer must not have to

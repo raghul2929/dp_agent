@@ -48,6 +48,8 @@ The cell reviewed before and its own files have changed. Review `changed_files` 
 
 A diff review owes an answer for every finding in `replay`. Findings in `carry_forward` are untouched.
 
+**A diff brief can have an empty `changed_files`.** That means this cell's own files are the same as at the last review, and `replay` lists findings whose location (`file` or `also`) lies in **another cell's file** that has since changed, for example a fix that landed in the API for a finding the AI review raised. Replay those findings against the current code and stop. There is nothing wider to review.
+
 ### `interface`
 
 Only an upstream module changed. This cell's own files are the same as when it was last reviewed, so do not review them. Check the boundary:
